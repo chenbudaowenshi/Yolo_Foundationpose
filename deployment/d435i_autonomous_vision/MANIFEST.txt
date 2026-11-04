@@ -1,0 +1,47 @@
+# D435i autonomous vision distribution manifest
+
+[application: required]
+examples/d435i_autonomous_vision.py
+examples/d435i_foundationpose.py
+examples/async_pose_worker.py
+examples/multi_object_rgbd_tracker.py
+examples/rgbd_kalman_tracker.py
+examples/upright_pose_utils.py
+examples/depth_mask_utils.py
+ultralytics/
+runs/segment/drink_seg/weights/best.pt
+mesh/yinliao_edit_fixed.obj
+licenses/YOLOv8-GPL-3.0.txt
+README.md
+docs/README_D435I_AUTONOMOUS_VISION_ZH.md
+requirements-app.txt
+run_d435i.sh
+verify_install.py
+
+[FoundationPose: required at runtime, may be installed separately]
+FoundationPose/estimater.py
+FoundationPose/Utils.py
+FoundationPose/datareader.py
+FoundationPose/learning/
+FoundationPose/mycpp/ source and a locally rebuilt mycpp/build/*.so
+FoundationPose/weights/2023-10-28-18-33-37/config.yml
+FoundationPose/weights/2023-10-28-18-33-37/model_best.pth
+FoundationPose/weights/2024-01-11-20-02-45/config.yml
+FoundationPose/weights/2024-01-11-20-02-45/model_best.pth
+FoundationPose/LICENSE
+
+[do not package]
+.git/
+.vscode/
+__pycache__/
+*.pyc
+datasets/
+tools/
+tests/
+runs/ other than runs/segment/drink_seg/weights/best.pt
+mesh/ other than mesh/yinliao_edit_fixed.obj
+recordings and generated output
+the local Conda environment
+FoundationPose/mycpp/build/ binaries built on the sender machine
+FoundationPose demo videos/assets
+

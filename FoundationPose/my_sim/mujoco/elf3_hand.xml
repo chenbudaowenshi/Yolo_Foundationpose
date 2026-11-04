@@ -1,0 +1,357 @@
+<mujoco model="elf3">
+  <compiler angle="radian" meshdir="./meshes/"/>
+
+  <!-- Keep body-mounted cameras from clipping the robot when large terrains increase model extent. -->
+  <visual>
+    <map znear="0.0005" zfar="2"/>
+  </visual>
+
+  <size nkey="1" nuser_sensor="11"/>
+
+  <default>
+    <default class="elf3">
+      <geom type="mesh" contype="0" conaffinity="0" group="0" density="0" material="silver"/>
+      <site group="5" rgba="1 0 0 1"/>
+      <default class="collision">
+        <geom type="capsule" contype="1" conaffinity="1" group="3" rgba="0.2 0.6 0.2 0.3"/>
+        <default class="foot_capsule">
+          <geom size="0.01 0 0"/>
+        </default>
+      </default>
+    </default>
+  </default>
+
+  <asset>
+    <material name="silver" rgba="0.7 0.7 0.7 1"/>
+    <material name="black" rgba="0.2 0.2 0.2 1"/>
+    <mesh name="torso_link" content_type="model/stl" file="torso_link.STL"/>
+    <mesh name="head_z_link" content_type="model/stl" file="head_z_link.STL"/>
+    <mesh name="head_y_link" content_type="model/stl" file="head_y_link.STL"/>
+    <mesh name="waist_y_link" content_type="model/stl" file="waist_y_link.STL"/>
+    <mesh name="waist_x_link" content_type="model/stl" file="waist_x_link.STL"/>
+    <mesh name="waist_z_link" content_type="model/stl" file="waist_z_link.STL"/>
+    <mesh name="l_hip_y_link" content_type="model/stl" file="l_hip_y_link.STL"/>
+    <mesh name="l_hip_x_link" content_type="model/stl" file="l_hip_x_link.STL"/>
+    <mesh name="l_hip_z_link" content_type="model/stl" file="l_hip_z_link.STL"/>
+    <mesh name="l_knee_y_link" content_type="model/stl" file="l_knee_y_link.STL"/>
+    <mesh name="l_ankle_y_link" content_type="model/stl" file="l_ankle_y_link.STL"/>
+    <mesh name="l_ankle_x_link" content_type="model/stl" file="l_ankle_x_link.STL"/>
+    <mesh name="r_hip_y_link" content_type="model/stl" file="r_hip_y_link.STL"/>
+    <mesh name="r_hip_x_link" content_type="model/stl" file="r_hip_x_link.STL"/>
+    <mesh name="r_hip_z_link" content_type="model/stl" file="r_hip_z_link.STL"/>
+    <mesh name="r_knee_y_link" content_type="model/stl" file="r_knee_y_link.STL"/>
+    <mesh name="r_ankle_y_link" content_type="model/stl" file="r_ankle_y_link.STL"/>
+    <mesh name="r_ankle_x_link" content_type="model/stl" file="r_ankle_x_link.STL"/>
+    <mesh name="l_shoulder_y_link" content_type="model/stl" file="l_shoulder_y_link.STL"/>
+    <mesh name="l_shoulder_x_link" content_type="model/stl" file="l_shoulder_x_link.STL"/>
+    <mesh name="l_shoulder_z_link" content_type="model/stl" file="l_shoulder_z_link.STL"/>
+    <mesh name="l_elbow_y_link" content_type="model/stl" file="l_elbow_y_link.STL"/>
+    <mesh name="l_wrist_x_link" content_type="model/stl" file="l_wrist_x_link.STL"/>
+    <mesh name="l_wrist_y_link" content_type="model/stl" file="l_wrist_y_link.STL"/>
+    <mesh name="l_wrist_z_link" content_type="model/stl" file="l_hand.STL"/>
+    <mesh name="r_shoulder_y_link" content_type="model/stl" file="r_shoulder_y_link.STL"/>
+    <mesh name="r_shoulder_x_link" content_type="model/stl" file="r_shoulder_x_link.STL"/>
+    <mesh name="r_shoulder_z_link" content_type="model/stl" file="r_shoulder_z_link.STL"/>
+    <mesh name="r_elbow_y_link" content_type="model/stl" file="r_elbow_y_link.STL"/>
+    <mesh name="r_wrist_x_link" content_type="model/stl" file="r_wrist_x_link.STL"/>
+    <mesh name="r_wrist_y_link" content_type="model/stl" file="r_wrist_y_link.STL"/>
+    <mesh name="r_wrist_z_link" content_type="model/stl" file="r_hand.STL"/>
+  </asset>
+
+  <worldbody>
+    <body name="torso_link" childclass="elf3" pos="0 0 1.1">
+      <inertial pos="0.00248104 -0.00011985 -0.0213511" mass="11.66386158" fullinertia="0.16938518 0.13849556 0.07231662 -0.00016255 0.00108159 -8.304e-05"/>
+      <joint name="world_joint" type="free"/>
+      <geom rgba="0.75294 0.75294 0.75294 1" mesh="torso_link"/>
+      <geom name="torso_collision" class="collision" size="0.09 0.1" pos="0 0 -0.02" quat="0 1 0 0" condim="1"/>
+      <geom name="torso_2_collision" class="collision" size="0.08 0.025" pos="0 0 -0.12" quat="0.707107 0.707107 0 0" condim="1"/>
+      <site name="imu_in_torso" pos="0 0 0" size="0.01"/>
+      <!-- Stable chase camera: stays behind the torso and re-aims at it every frame. -->
+      <camera name="tracking" pos="-4 0 1.5" mode="targetbody" target="torso_link"/>
+      <include file="sensors/body_depth_camera_camera.xml"/>
+      <light pos="0 0 2" dir="0 0 -1" mode="trackcom"/>
+      <body name="waist_y_link" pos="0 0 -0.2265">
+        <inertial pos="0 0 0" mass="0.06620328" fullinertia="1.106e-05 1.847e-05 2.803e-05 0 0 0"/>
+        <joint name="waist_y_joint" pos="0 0 0" axis="0 1 0" range="-0.5236 0.5236" actuatorfrcrange="-100 100" armature="0.0274702"/>
+        <geom rgba="0.752941 0.752941 0.752941 1" mesh="waist_y_link"/>
+        <body name="waist_x_link">
+          <inertial pos="-0.00930435 0 -0.01487864" mass="0.24344947" fullinertia="0.0001527 0.00021777 0.00028814 0 2.968e-05 0"/>
+          <joint name="waist_x_joint" pos="0 0 0" axis="1 0 0" range="-0.2618 0.2618" actuatorfrcrange="-100 100" armature="0.0412054"/>
+          <geom rgba="0.752941 0.752941 0.752941 1" mesh="waist_x_link"/>
+          <body name="waist_z_link">
+            <inertial pos="0.00010085 -0.00035077 -0.12669367" mass="5.2693813" fullinertia="0.02160456 0.01703101 0.01459524 -0.0001496 -0.00010652 0.00016276"/>
+            <joint name="waist_z_joint" pos="0 0 0" axis="0 0 1" range="-2.8798 2.8798" actuatorfrcrange="-150 150" armature="0.044688"/>
+            <geom rgba="0.752941 0.752941 0.752941 1" mesh="waist_z_link"/>
+            <geom name="waist_z_1_collision" class="collision" size="0.055 0.03" pos="0 0 -0.156" quat="0.707107 0.707107 0 0" condim="1"/>
+            <geom name="waist_z_2_collision" class="collision" size="0.055 0.053" pos="0 0 -0.103" quat="0 1 0 0" condim="1"/>
+            <body name="l_hip_y_link" pos="0 0.136 -0.156">
+              <inertial pos="-0.02327137 -0.0044378 0.00220394" mass="1.74663835" fullinertia="0.00270621 0.00206302 0.00218919 8.023e-05 1.126e-05 5.888e-05"/>
+              <joint name="l_hip_y_joint" pos="0 0 0" axis="0 1 0" range="-2.8798 2.8798" actuatorfrcrange="-150 150" armature="0.044688"/>
+              <geom rgba="0.752941 0.752941 0.752941 1" mesh="l_hip_y_link"/>
+              <body name="l_hip_x_link">
+                <inertial pos="0.01788252 0 -0.03683802" mass="0.23202193" fullinertia="0.00036995 0.00032959 0.00014279 0 -3.668e-05 0"/>
+                <joint name="l_hip_x_joint" pos="0 0 0" axis="1 0 0" range="-0.48869 3.0543" actuatorfrcrange="-150 150" armature="0.044688"/>
+                <geom rgba="0.752941 0.752941 0.752941 1" mesh="l_hip_x_link"/>
+                <geom name="l_hip_x_collision" class="collision" size="0.05 0.0175" pos="-0.0175 0 0" quat="0.707107 0 -0.707107 0" condim="1"/>
+                <body name="l_hip_z_link">
+                  <inertial pos="0.00212894 -0.01021633 -0.23364887" mass="2.94332059" fullinertia="0.03095416 0.03161495 0.0035579 1.98e-06 0.00031793 -0.00246019"/>
+                  <joint name="l_hip_z_joint" pos="0 0 0" axis="0 0 1" range="-2.8798 2.8798" actuatorfrcrange="-50 50" armature="0.0137351"/>
+                  <geom rgba="0.752941 0.752941 0.752941 1" mesh="l_hip_z_link"/>
+                  <geom name="l_hip_z_1_collision" class="collision" size="0.05 0.1" pos="0 0 -0.22" condim="1"/>
+                  <geom name="l_hip_z_2_collision" class="collision" size="0.05 0.0125" pos="0 -0.0125 -0.32" quat="0.707107 0.707107 0 0" condim="1"/>
+                  <body name="l_knee_y_link" pos="0 0 -0.32">
+                    <inertial pos="0.00668026 0.00374771 -0.14451634" mass="1.86991215" fullinertia="0.00964585 0.00972958 0.00144471 5.343e-05 -0.00023357 -0.00066056"/>
+                    <joint name="l_knee_y_joint" pos="0 0 0" axis="0 1 0" range="-0.087266 2.618" actuatorfrcrange="-150 150" armature="0.044688"/>
+                    <geom rgba="0.752941 0.752941 0.752941 1" mesh="l_knee_y_link"/>
+                    <geom name="l_knee_y_collision" class="collision" size="0.05 0.07" pos="0 0 -0.19" condim="1"/>
+                    <body name="l_ankle_y_link" pos="0 0 -0.32">
+                      <inertial pos="0 0 0" mass="0.01268984" fullinertia="1.31e-06 5.9e-07 1.55e-06 0 0 0"/>
+                      <joint name="l_ankle_y_joint" pos="0 0 0" axis="0 1 0" range="-0.87266 0.7854" actuatorfrcrange="-50 50" armature="0.00848397"/>
+                      <geom rgba="0.752941 0.752941 0.752941 1" mesh="l_ankle_y_link"/>
+                      <body name="l_ankle_x_link">
+                        <inertial pos="0.020935 0 -0.02438162" mass="0.37980156" fullinertia="0.00020999 0.00150042 0.00158777 0 7.03e-05 0"/>
+                        <joint name="l_ankle_x_joint" pos="0 0 0" axis="1 0 0" range="-0.34907 0.34907" actuatorfrcrange="-20 20" armature="0.00551458"/>
+                        <geom rgba="0.752941 0.752941 0.752941 1" mesh="l_ankle_x_link"/>
+                        <geom name="l_foot1_collision" class="foot_capsule" size="0.01 0.09" pos="0.03 -0.03 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
+                        <geom name="l_foot2_collision" class="foot_capsule" size="0.01 0.1" pos="0.03 -0.02 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
+                        <geom name="l_foot3_collision" class="foot_capsule" size="0.01 0.105" pos="0.03 -0.01 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
+                        <geom name="l_foot4_collision" class="foot_capsule" size="0.01 0.11" pos="0.03 0 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
+                        <geom name="l_foot5_collision" class="foot_capsule" size="0.01 0.105" pos="0.03 0.01 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
+                        <geom name="l_foot6_collision" class="foot_capsule" size="0.01 0.1" pos="0.03 0.02 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
+                        <geom name="l_foot7_collision" class="foot_capsule" size="0.01 0.09" pos="0.03 0.03 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
+                        <site name="l_foot" pos="0 0 0"/>
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+            <body name="r_hip_y_link" pos="0 -0.136 -0.156">
+              <inertial pos="-0.02327137 0.00327913 0.00019704" mass="1.74663841" fullinertia="0.00273024 0.00207512 0.00220112 -9.182e-05 -8.82e-06 -7.27e-05"/>
+              <joint name="r_hip_y_joint" pos="0 0 0" axis="0 1 0" range="-2.8798 2.8798" actuatorfrcrange="-150 150" armature="0.044688"/>
+              <geom rgba="0.752941 0.752941 0.752941 1" mesh="r_hip_y_link"/>
+              <body name="r_hip_x_link">
+                <inertial pos="0.01788252 0 -0.03683802" mass="0.23202193" fullinertia="0.00036995 0.00032959 0.00014279 0 -3.668e-05 0"/>
+                <joint name="r_hip_x_joint" pos="0 0 0" axis="1 0 0" range="-3.0543 0.48869" actuatorfrcrange="-150 150" armature="0.044688"/>
+                <geom rgba="0.752941 0.752941 0.752941 1" mesh="r_hip_x_link"/>
+                <geom name="r_hip_x_collision" class="collision" size="0.05 0.0175" pos="-0.0175 0 0" quat="0.707107 0 -0.707107 0" condim="1"/>
+                <body name="r_hip_z_link">
+                  <inertial pos="0.00144137 0.00989203 -0.23483981" mass="2.94332069" fullinertia="0.03157825 0.03222338 0.00358063 2.026e-05 0.00014025 0.00261668"/>
+                  <joint name="r_hip_z_joint" pos="0 0 0" axis="0 0 1" range="-2.8798 2.8798" actuatorfrcrange="-50 50" armature="0.0137351"/>
+                  <geom rgba="0.752941 0.752941 0.752941 1" mesh="r_hip_z_link"/>
+                  <geom name="r_hip_z_1_collision" class="collision" size="0.05 0.1" pos="0 0 -0.22" condim="1"/>
+                  <geom name="r_hip_z_2_collision" class="collision" size="0.05 0.0125" pos="0 0.0125 -0.32" quat="0.707107 -0.707107 0 0" condim="1"/>
+                  <body name="r_knee_y_link" pos="0 0 -0.32">
+                    <inertial pos="0.00668027 -0.00326262 -0.14451644" mass="1.86991402" fullinertia="0.00965223 0.0097296 0.00145107 -6.279e-05 -0.00023357 0.00065665"/>
+                    <joint name="r_knee_y_joint" pos="0 0 0" axis="0 1 0" range="-0.087266 2.618" actuatorfrcrange="-150 150" armature="0.044688"/>
+                    <geom rgba="0.752941 0.752941 0.752941 1" mesh="r_knee_y_link"/>
+                    <geom name="r_knee_y_collision" class="collision" size="0.05 0.07" pos="0 0 -0.19" condim="1"/>
+                    <body name="r_ankle_y_link" pos="0 0 -0.32">
+                      <inertial pos="0 0 0" mass="0.01268984" fullinertia="1.31e-06 5.9e-07 1.55e-06 0 0 0"/>
+                      <joint name="r_ankle_y_joint" pos="0 0 0" axis="0 1 0" range="-0.87266 0.7854" actuatorfrcrange="-50 50" armature="0.00848397"/>
+                      <geom rgba="0.752941 0.752941 0.752941 1" mesh="r_ankle_y_link"/>
+                      <body name="r_ankle_x_link">
+                        <inertial pos="0.020935 0 -0.02438162" mass="0.37980156" fullinertia="0.00020999 0.00150042 0.00158777 0 7.03e-05 0"/>
+                        <joint name="r_ankle_x_joint" pos="0 0 0" axis="1 0 0" range="-0.34907 0.34907" actuatorfrcrange="-20 20" armature="0.00551458"/>
+                        <geom rgba="0.752941 0.752941 0.752941 1" mesh="r_ankle_x_link"/>
+                        <geom name="r_foot1_collision" class="foot_capsule" size="0.01 0.09" pos="0.03 -0.03 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
+                        <geom name="r_foot2_collision" class="foot_capsule" size="0.01 0.1" pos="0.03 -0.02 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
+                        <geom name="r_foot3_collision" class="foot_capsule" size="0.01 0.105" pos="0.03 -0.01 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
+                        <geom name="r_foot4_collision" class="foot_capsule" size="0.01 0.11" pos="0.03 0 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
+                        <geom name="r_foot5_collision" class="foot_capsule" size="0.01 0.105" pos="0.03 0.01 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
+                        <geom name="r_foot6_collision" class="foot_capsule" size="0.01 0.1" pos="0.03 0.02 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
+                        <geom name="r_foot7_collision" class="foot_capsule" size="0.01 0.09" pos="0.03 0.03 -0.03" quat="0.707107 0 -0.707107 0" priority="1" friction="0.6"/>
+                        <site name="r_foot" pos="0 0 0"/>
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+      <body name="l_shoulder_y_link" pos="0 0.178 0.087">
+        <inertial pos="-0.0232938 -0.00424861 0.00174581" mass="0.99747353" fullinertia="0.00104473 0.00086991 0.00094265 5.318e-05 9.75e-06 1.522e-05"/>
+        <joint name="l_shoulder_y_joint" pos="0 0 0" axis="0 1 0" range="-2.8798 2.8798" actuatorfrcrange="-50 50" armature="0.0137351"/>
+        <geom rgba="0.752941 0.752941 0.752941 1" mesh="l_shoulder_y_link"/>
+        <body name="l_shoulder_x_link">
+          <inertial pos="0.01044987 0 -0.0265042" mass="0.13939414" fullinertia="0.00014319 0.00012285 6.653e-05 0 -1.777e-05 0"/>
+          <joint name="l_shoulder_x_joint" pos="0 0 0" axis="1 0 0" range="-0.34907 3.0543" actuatorfrcrange="-50 50" armature="0.0137351"/>
+          <geom rgba="0.752941 0.752941 0.752941 1" mesh="l_shoulder_x_link"/>
+          <geom name="l_shoulder_x_collision" class="collision" size="0.04 0.015" pos="-0.015 0 0" quat="0.707107 0 -0.707107 0" condim="1"/>
+          <body name="l_shoulder_z_link">
+            <inertial pos="-0.0014024 -0.00501388 -0.18798077" mass="1.67349896" fullinertia="0.01182993 0.01200646 0.00132122 1.325e-05 -6e-08 -0.00060488"/>
+            <joint name="l_shoulder_z_joint" pos="0 0 0" axis="0 0 1" range="-2.8798 2.8798" actuatorfrcrange="-25 25" armature="0.00424198"/>
+            <geom rgba="0.752941 0.752941 0.752941 1" mesh="l_shoulder_z_link"/>
+            <geom name="l_shoulder_z_1_collision" class="collision" size="0.035 0.095" pos="0 0 -0.175" condim="1"/>
+            <geom name="l_shoulder_z_2_collision" class="collision" size="0.04 0.0125" pos="0 -0.0025 -0.256" quat="0.707107 0.707107 0 0" condim="1"/>
+            <body name="l_elbow_y_link" pos="0 0 -0.256">
+              <inertial pos="0.02791974 0.01785187 0" mass="0.1020615" fullinertia="4.729e-05 9.312e-05 9.347e-05 2.121e-05 0 0"/>
+              <joint name="l_elbow_y_joint" pos="0 0 0" axis="0 1 0" range="-0.95993 1.6581" actuatorfrcrange="-50 50" armature="0.0137351"/>
+              <geom rgba="0.752941 0.752941 0.752941 1" mesh="l_elbow_y_link"/>
+              <geom name="l_elbow_y_collision" class="collision" size="0.04 0.06" pos="0.14 0 0" quat="0.707107 0 -0.707107 0" condim="1"/>
+              <body name="l_wrist_x_link" pos="0.256 0 0">
+                <inertial pos="-0.1257212 -0.00125474 0" mass="1.24945755" fullinertia="0.00085066 0.00329725 0.00359642 3.2e-05 1.443e-05 5.4e-07"/>
+                <joint name="l_wrist_x_joint" pos="0 0 0" axis="1 0 0" range="-2.8798 2.8798" actuatorfrcrange="-25 25" armature="0.00424198"/>
+                <geom rgba="0.752941 0.752941 0.752941 1" mesh="l_wrist_x_link"/>
+                <body name="l_wrist_y_link">
+                  <inertial pos="0.00034025 4.93e-06 -0.00154873" mass="0.56828784" fullinertia="0.00032946 0.00032109 0.00031327 1.7e-07 5.7e-07 8.65e-06"/>
+                  <joint name="l_wrist_y_joint" pos="0 0 0" axis="0 1 0" range="-1.309 1.309" actuatorfrcrange="-25 25" armature="0.00424198"/>
+                  <geom rgba="0.752941 0.752941 0.752941 1" mesh="l_wrist_y_link"/>
+                  <body name="l_wrist_z_link">
+                    <inertial pos="0.03004397 0 0.01513885" mass="0.09977741" fullinertia="6.728e-05 8.372e-05 6.773e-05 0 2.438e-05 0"/>
+                    <joint name="l_wrist_z_joint" pos="0 0 0" axis="0 0 1" range="-0.7854 0.7854" actuatorfrcrange="-25 25" armature="0.00424198"/>
+                    <geom rgba="0.752941 0.752941 0.752941 1" mesh="l_wrist_z_link"/>
+                    <geom name="l_wrist_z_collision" class="collision" size="0.03" pos="0.04 0 0" type="sphere" condim="1"/>
+                    <geom name="l_wrist_z_collision2" class="collision" type="sphere" size="0.05" pos="0.11 -0.01 0"/>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+      <body name="r_shoulder_y_link" pos="0 -0.178 0.087">
+        <inertial pos="-0.0232938 0.00338182 0.00024448" mass="0.99747344" fullinertia="0.0010543 0.00087397 0.00094817 -5.724e-05 2.7e-06 -2.118e-05"/>
+        <joint name="r_shoulder_y_joint" pos="0 0 0" axis="0 1 0" range="-2.8798 2.8798" actuatorfrcrange="-50 50" armature="0.0137351"/>
+        <geom rgba="0.752941 0.752941 0.752941 1" mesh="r_shoulder_y_link"/>
+        <body name="r_shoulder_x_link">
+          <inertial pos="0.01044987 0 -0.0265042" mass="0.13939414" fullinertia="0.00014319 0.00012285 6.653e-05 0 -1.777e-05 0"/>
+          <joint name="r_shoulder_x_joint" pos="0 0 0" axis="1 0 0" range="-3.0543 0.34907" actuatorfrcrange="-50 50" armature="0.0137351"/>
+          <geom rgba="0.752941 0.752941 0.752941 1" mesh="r_shoulder_x_link"/>
+          <geom name="r_shoulder_x_collision" class="collision" size="0.04 0.015" pos="-0.015 0 0" quat="0.707107 0 -0.707107 0" condim="1"/>
+          <body name="r_shoulder_z_link">
+            <inertial pos="-0.0015394 0.00501389 -0.18708592" mass="1.67349843" fullinertia="0.01162379 0.01180073 0.00132162 -3.5e-06 -0.00012248 0.00059292"/>
+            <joint name="r_shoulder_z_joint" pos="0 0 0" axis="0 0 1" range="-2.8798 2.8798" actuatorfrcrange="-25 25" armature="0.00424198"/>
+            <geom rgba="0.752941 0.752941 0.752941 1" mesh="r_shoulder_z_link"/>
+            <geom name="r_shoulder_z_1_collision" class="collision" size="0.035 0.095" pos="0 0 -0.175" condim="1"/>
+            <geom name="r_shoulder_z_2_collision" class="collision" size="0.04 0.0125" pos="0 0.0025 -0.256" quat="0.707107 -0.707107 0 0" condim="1"/>
+            <body name="r_elbow_y_link" pos="0 0 -0.256">
+              <inertial pos="0.02791974 -0.01785187 0" mass="0.1020615" fullinertia="4.729e-05 9.312e-05 9.347e-05 -2.121e-05 0 0"/>
+              <joint name="r_elbow_y_joint" pos="0 0 0" axis="0 1 0" range="-0.95993 1.6581" actuatorfrcrange="-50 50" armature="0.0137351"/>
+              <geom rgba="0.752941 0.752941 0.752941 1" mesh="r_elbow_y_link"/>
+              <geom name="r_elbow_y_collision" class="collision" size="0.04 0.06" pos="0.14 0 0" quat="0.707107 0 -0.707107 0" condim="1"/>
+              <body name="r_wrist_x_link" pos="0.256 0 0">
+                <inertial pos="-0.1252074 0.00074632 0" mass="1.24945755" fullinertia="0.00085193 0.00334022 0.00364065 -5.699e-05 1.477e-05 -2.3e-07"/>
+                <joint name="r_wrist_x_joint" pos="0 0 0" axis="1 0 0" range="-2.8798 2.8798" actuatorfrcrange="-25 25" armature="0.00424198"/>
+                <geom rgba="0.752941 0.752941 0.752941 1" mesh="r_wrist_x_link"/>
+                <body name="r_wrist_y_link">
+                  <inertial pos="0.00034019 -0.00112277 -0.00154873" mass="0.56828784" fullinertia="0.00032875 0.00032109 0.00031255 -5e-08 5.7e-07 -1.052e-05"/>
+                  <joint name="r_wrist_y_joint" pos="0 0 0" axis="0 1 0" range="-1.309 1.309" actuatorfrcrange="-25 25" armature="0.00424198"/>
+                  <geom rgba="0.752941 0.752941 0.752941 1" mesh="r_wrist_y_link"/>
+                  <body name="r_wrist_z_link">
+                    <inertial pos="0.03004397 0 0.01513885" mass="0.09977741" fullinertia="6.728e-05 8.372e-05 6.773e-05 0 2.438e-05 0"/>
+                    <joint name="r_wrist_z_joint" pos="0 0 0" axis="0 0 1" range="-0.7854 0.7854" actuatorfrcrange="-25 25" armature="0.00424198"/>
+                    <geom rgba="0.752941 0.752941 0.752941 1" mesh="r_wrist_z_link"/>
+                    <geom name="r_wrist_z_collision" class="collision" size="0.03" pos="0.04 0 0" type="sphere" condim="1"/>
+                    <geom name="r_wrist_z_collision2" class="collision" type="sphere" size="0.05" pos="0.11 0.01 0"/>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+      <body name="head_z_link" pos="0 0 0.2995">
+          <inertial pos="2.48e-06 -2.072e-05 -0.07141233" mass="0.37665142" fullinertia="0.00192005 0.00110511 0.00095156 -1.6e-07 1.7e-07 7e-08"/>
+          <joint name="head_z_joint" pos="0 0 0" axis="0 0 1" range="-1.57 1.57" actuatorfrcrange="-21 21" armature="0.00424198"/>
+          <geom rgba="0.752941 0.752941 0.752941 1" mesh="head_z_link"/>
+        <body name="head_y_link">
+          <inertial pos="0.00693497 0.00114433 -0.00987703" mass="1.57425673" fullinertia="0.00294861 0.0032495 0.00265366 8.37e-06 0.00021043 -1.401e-05"/>
+          <joint name="head_y_joint" pos="0 0 0" axis="0 1 0" range="-0.785 0.785" actuatorfrcrange="-21 21" armature="0.00424198"/>
+          <geom rgba="0.752941 0.752941 0.752941 1" mesh="head_y_link"/>
+          <geom name="head_collision" class="collision" size="0.065" fromto="-0.01 0 0.0005 0.02 0 0.0005" condim="1"/>
+          <include file="sensors/head_depth_camera_camera.xml"/>
+          <include file="sensors/head_lidar_mount.xml"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <!-- <actuator>
+    <general name="waist_y_joint" joint="waist_y_joint" ctrllimited="false" forcelimited="true" forcerange="-90 90" biastype="affine" gainprm="108.448" biasprm="0 -108.448 -6.90402"/>
+    <general name="waist_x_joint" joint="waist_x_joint" ctrllimited="false" forcelimited="true" forcerange="-100 100" biastype="affine" gainprm="162.672" biasprm="0 -162.672 -10.356"/>
+    <general name="waist_z_joint" joint="waist_z_joint" ctrllimited="false" forcelimited="true" forcerange="-150 150" biastype="affine" gainprm="176.421" biasprm="0 -176.421 -11.2313"/>
+    <general name="l_hip_y_joint" joint="l_hip_y_joint" ctrllimited="false" forcelimited="true" forcerange="-150 150" biastype="affine" gainprm="176.421" biasprm="0 -176.421 -11.2313"/>
+    <general name="l_hip_x_joint" joint="l_hip_x_joint" ctrllimited="false" forcelimited="true" forcerange="-150 150" biastype="affine" gainprm="176.421" biasprm="0 -176.421 -11.2313"/>
+    <general name="l_hip_z_joint" joint="l_hip_z_joint" ctrllimited="false" forcelimited="true" forcerange="-45 45" biastype="affine" gainprm="54.2241" biasprm="0 -54.2241 -3.45201"/>
+    <general name="l_knee_y_joint" joint="l_knee_y_joint" ctrllimited="false" forcelimited="true" forcerange="-150 150" biastype="affine" gainprm="176.421" biasprm="0 -176.421 -11.2313"/>
+    <general name="l_ankle_y_joint" joint="l_ankle_y_joint" ctrllimited="false" forcelimited="true" forcerange="-40 40" biastype="affine" gainprm="33.4934" biasprm="0 -33.4934 -2.13225"/>
+    <general name="l_ankle_x_joint" joint="l_ankle_x_joint" ctrllimited="false" forcelimited="true" forcerange="-15 15" biastype="affine" gainprm="10" biasprm="0 -10 -1"/>
+    <general name="r_hip_y_joint" joint="r_hip_y_joint" ctrllimited="false" forcelimited="true" forcerange="-150 150" biastype="affine" gainprm="176.421" biasprm="0 -176.421 -11.2313"/>
+    <general name="r_hip_x_joint" joint="r_hip_x_joint" ctrllimited="false" forcelimited="true" forcerange="-150 150" biastype="affine" gainprm="176.421" biasprm="0 -176.421 -11.2313"/>
+    <general name="r_hip_z_joint" joint="r_hip_z_joint" ctrllimited="false" forcelimited="true" forcerange="-45 45" biastype="affine" gainprm="54.2241" biasprm="0 -54.2241 -3.45201"/>
+    <general name="r_knee_y_joint" joint="r_knee_y_joint" ctrllimited="false" forcelimited="true" forcerange="-150 150" biastype="affine" gainprm="176.421" biasprm="0 -176.421 -11.2313"/>
+    <general name="r_ankle_y_joint" joint="r_ankle_y_joint" ctrllimited="false" forcelimited="true" forcerange="-40 40" biastype="affine" gainprm="33.4934" biasprm="0 -33.4934 -2.13225"/>
+    <general name="r_ankle_x_joint" joint="r_ankle_x_joint" ctrllimited="false" forcelimited="true" forcerange="-15 15" biastype="affine" gainprm="10" biasprm="0 -10 -1"/>
+    <general name="l_shoulder_y_joint" joint="l_shoulder_y_joint" ctrllimited="false" forcelimited="true" forcerange="-45 45" biastype="affine" gainprm="54.2241" biasprm="0 -54.2241 -3.45201"/>
+    <general name="l_shoulder_x_joint" joint="l_shoulder_x_joint" ctrllimited="false" forcelimited="true" forcerange="-45 45" biastype="affine" gainprm="54.2241" biasprm="0 -54.2241 -3.45201"/>
+    <general name="l_shoulder_z_joint" joint="l_shoulder_z_joint" ctrllimited="false" forcelimited="true" forcerange="-21 21" biastype="affine" gainprm="16.7467" biasprm="0 -16.7467 -1.06613"/>
+    <general name="l_elbow_y_joint" joint="l_elbow_y_joint" ctrllimited="false" forcelimited="true" forcerange="-45 45" biastype="affine" gainprm="54.2241" biasprm="0 -54.2241 -3.45201"/>
+    <general name="l_wrist_x_joint" joint="l_wrist_x_joint" ctrllimited="false" forcelimited="true" forcerange="-21 21" biastype="affine" gainprm="16.7467" biasprm="0 -16.7467 -1.06613"/>
+    <general name="l_wrist_y_joint" joint="l_wrist_y_joint" ctrllimited="false" forcelimited="true" forcerange="-21 21" biastype="affine" gainprm="16.7467" biasprm="0 -16.7467 -1.06613"/>
+    <general name="l_wrist_z_joint" joint="l_wrist_z_joint" ctrllimited="false" forcelimited="true" forcerange="-21 21" biastype="affine" gainprm="16.7467" biasprm="0 -16.7467 -1.06613"/>
+    <general name="r_shoulder_y_joint" joint="r_shoulder_y_joint" ctrllimited="false" forcelimited="true" forcerange="-45 45" biastype="affine" gainprm="54.2241" biasprm="0 -54.2241 -3.45201"/>
+    <general name="r_shoulder_x_joint" joint="r_shoulder_x_joint" ctrllimited="false" forcelimited="true" forcerange="-45 45" biastype="affine" gainprm="54.2241" biasprm="0 -54.2241 -3.45201"/>
+    <general name="r_shoulder_z_joint" joint="r_shoulder_z_joint" ctrllimited="false" forcelimited="true" forcerange="-21 21" biastype="affine" gainprm="16.7467" biasprm="0 -16.7467 -1.06613"/>
+    <general name="r_elbow_y_joint" joint="r_elbow_y_joint" ctrllimited="false" forcelimited="true" forcerange="-45 45" biastype="affine" gainprm="54.2241" biasprm="0 -54.2241 -3.45201"/>
+    <general name="r_wrist_x_joint" joint="r_wrist_x_joint" ctrllimited="false" forcelimited="true" forcerange="-21 21" biastype="affine" gainprm="16.7467" biasprm="0 -16.7467 -1.06613"/>
+    <general name="r_wrist_y_joint" joint="r_wrist_y_joint" ctrllimited="false" forcelimited="true" forcerange="-21 21" biastype="affine" gainprm="16.7467" biasprm="0 -16.7467 -1.06613"/>
+    <general name="r_wrist_z_joint" joint="r_wrist_z_joint" ctrllimited="false" forcelimited="true" forcerange="-21 21" biastype="affine" gainprm="16.7467" biasprm="0 -16.7467 -1.06613"/>
+    <general name="head_z_joint" joint="head_z_joint" ctrllimited="false" forcelimited="true" forcerange="-21 21" biastype="affine" gainprm="16.7467" biasprm="0 -16.7467 -1.06613"/>
+    <general name="head_y_joint" joint="head_y_joint" ctrllimited="false" forcelimited="true" forcerange="-21 21" biastype="affine" gainprm="16.7467" biasprm="0 -16.7467 -1.06613"/>
+    </actuator> -->
+
+  <actuator>
+    <motor name="waist_y_joint" joint="waist_y_joint" gear="1" ctrllimited='true' ctrlrange='-100 100'/>
+    <motor name="waist_x_joint" joint="waist_x_joint" gear="1" ctrllimited='true' ctrlrange='-100 100'/>
+    <motor name="waist_z_joint" joint="waist_z_joint" gear="1" ctrllimited='true' ctrlrange='-150 150'/>
+
+    <motor name="l_hip_y_joint" joint="l_hip_y_joint" gear="1" ctrllimited='true' ctrlrange='-150 150'/>
+    <motor name="l_hip_x_joint" joint="l_hip_x_joint" gear="1" ctrllimited='true' ctrlrange='-150 150'/>
+    <motor name="l_hip_z_joint" joint="l_hip_z_joint" gear="1" ctrllimited='true' ctrlrange='-50 50'/>
+    <motor name="l_knee_y_joint" joint="l_knee_y_joint" gear="1" ctrllimited='true' ctrlrange='-150 150'/>
+    <motor name="l_ankle_y_joint" joint="l_ankle_y_joint" gear="1" ctrllimited='true' ctrlrange='-50 50'/>
+    <motor name="l_ankle_x_joint" joint="l_ankle_x_joint" gear="1" ctrllimited='true' ctrlrange='-20 20'/>
+
+    <motor name="r_hip_y_joint" joint="r_hip_y_joint" gear="1" ctrllimited='true' ctrlrange='-150 150'/>
+    <motor name="r_hip_x_joint" joint="r_hip_x_joint" gear="1" ctrllimited='true' ctrlrange='-150 150'/>
+    <motor name="r_hip_z_joint" joint="r_hip_z_joint" gear="1" ctrllimited='true' ctrlrange='-50 50'/>
+    <motor name="r_knee_y_joint" joint="r_knee_y_joint" gear="1" ctrllimited='true' ctrlrange='-150 150'/>
+    <motor name="r_ankle_y_joint" joint="r_ankle_y_joint" gear="1" ctrllimited='true' ctrlrange='-50 50'/>
+    <motor name="r_ankle_x_joint" joint="r_ankle_x_joint" gear="1" ctrllimited='true' ctrlrange='-20 20'/>
+
+    <motor name="l_shoulder_y_joint" joint="l_shoulder_y_joint" gear="1" ctrllimited='true' ctrlrange='-50 50'/>
+    <motor name="l_shoulder_x_joint" joint="l_shoulder_x_joint" gear="1" ctrllimited='true' ctrlrange='-50 50'/>
+    <motor name="l_shoulder_z_joint" joint="l_shoulder_z_joint" gear="1" ctrllimited='true' ctrlrange='-25 25'/>
+    <motor name="l_elbow_y_joint" joint="l_elbow_y_joint" gear="1" ctrllimited='true' ctrlrange='-50 50'/>
+    <motor name="l_wrist_x_joint" joint="l_wrist_x_joint" gear="1" ctrllimited='true' ctrlrange='-25 25'/>
+    <motor name="l_wrist_y_joint" joint="l_wrist_y_joint" gear="1" ctrllimited='true' ctrlrange='-25 25'/>
+    <motor name="l_wrist_z_joint" joint="l_wrist_z_joint" gear="1" ctrllimited='true' ctrlrange='-25 25'/>
+
+    <motor name="r_shoulder_y_joint" joint="r_shoulder_y_joint" gear="1" ctrllimited='true' ctrlrange='-50 50'/>
+    <motor name="r_shoulder_x_joint" joint="r_shoulder_x_joint" gear="1" ctrllimited='true' ctrlrange='-50 50'/>
+    <motor name="r_shoulder_z_joint" joint="r_shoulder_z_joint" gear="1" ctrllimited='true' ctrlrange='-25 25'/>
+    <motor name="r_elbow_y_joint" joint="r_elbow_y_joint" gear="1" ctrllimited='true' ctrlrange='-50 50'/>
+    <motor name="r_wrist_x_joint" joint="r_wrist_x_joint" gear="1" ctrllimited='true' ctrlrange='-25 25'/>
+    <motor name="r_wrist_y_joint" joint="r_wrist_y_joint" gear="1" ctrllimited='true' ctrlrange='-25 25'/>
+    <motor name="r_wrist_z_joint" joint="r_wrist_z_joint" gear="1" ctrllimited='true' ctrlrange='-25 25'/>
+
+    <motor name="head_z_joint" joint="head_z_joint" gear="1" ctrllimited='true' ctrlrange='-21 21'/>
+    <motor name="head_y_joint" joint="head_y_joint" gear="1" ctrllimited='true' ctrlrange='-21 21'/>
+  </actuator>
+
+  <sensor>
+    <gyro name="torso_ang_vel" site="imu_in_torso"/>
+    <framequat name="torso_quat" objtype="site" objname="imu_in_torso"/>
+    <velocimeter name="torso_lin_vel" site="imu_in_torso"/>
+    <accelerometer name="torso_lin_acc" site="imu_in_torso"/>
+    <include file="sensors/body_depth_camera_sensor.xml"/>
+    <include file="sensors/head_depth_camera_sensor.xml"/>
+  </sensor>
+
+  <include file="sensors/head_lidar.xml"/>
+
+  <include file="terrains/universal_test/universal_test_terrain.xml"/>
+</mujoco>

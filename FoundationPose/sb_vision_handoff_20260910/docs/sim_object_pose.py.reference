@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+"""ObjectPose source backed by the simulator's ground truth, so the grasp point follows the actual object.
+
+    ros2 run shuangbi_grasp sim_object_pose --ros-args -p object_id:=bottle
+
+`manual_object_pose` publishes a pose that was typed in; it has no idea where the object really is, so the
+plan is only correct as long as nobody moves anything (and as long as the chassis is parked exactly where the
+typed-in number assumed).  This node subscribes to `/sim/truth/<object_id>` instead - move the bottle in the
+MuJoCo viewer and the grasp is recomputed for its new position, which is what online replanning is for.
+
+It deliberately keeps the same noise / staleness knobs as the manual source, because the point of a simulated
+sensor is to be able to make it behave like a bad one:
+
+    ros2 param set /sim_object_pose noise_sigma 0.01     # jitter like a depth camera
+    ros2 param set /sim_object_pose stamp_offset 0.3     # pretend the pipeline is slow
+    ros2 param set /sim_object_pose confidence 0.2       # a detection the validator should distrust
+
+This is NOT vision.  It is the shape vision will have (stage 8), with the perception replaced by an oracle,
+so everything downstream - validator, planner, executor - can be exercised against a moving target today.
+"""
+from __future__ import annotations
+
+import signal
+import sys
+
+import numpy as np
+import rclpy
+from geometry_msgs.msg import PoseStamped
+from rclpy.node import Node
+from sb_communication.msg import ObjectPose
+
+
+class SimObjectPose(Node):
+    def __init__(self) -> None:
+        super().__init__("sim_object_pose")
+        self.declare_parameter("object_id", "bottle")
+        self.declare_parameter("truth_topic", "")               # default: /sim/truth/<object_id>
+        self.declare_parameter("topic", "object_pose")
+        self.declare_parameter("confidence", 1.0)
+        self.declare_parameter("position_sigma", 0.0)           # reported covariance
+        self.declare_parameter("noise_sigma", 0.0)              # actual noise added to the position
+        self.declare_parameter("stamp_offset", 0.0)             # backdate the observation stamp
+        self.declare_parameter("valid_for", 0.0)
+        self.declare_parameter("source", "sim_truth")
+
+        object_id = str(self.get_parameter("object_id").value)
+        truth = str(self.get_parameter("truth_topic").value) or f"/sim/truth/{object_id}"
+        self.publisher = self.create_publisher(ObjectPose, str(self.get_parameter("topic").value), 10)
+        self.create_subscription(PoseStamped, truth, self._on_truth, 10)
+        self.sequence = 0
+        self.received = 0
+        self.rng = np.random.default_rng()
+        self.create_timer(5.0, self._report)
+        self.get_logger().info(f"sim_object_pose: {object_id} from {truth} -> {self.publisher.topic_name}")
+
+    def _report(self) -> None:
+        if self.received == 0:
+            self.get_logger().warning(
+                "no ground truth received yet; is sb_mujoco running and does the object exist in the scene?",
+                throttle_duration_sec=10.0)
+
+    def _on_truth(self, msg: PoseStamped) -> None:
+        self.received += 1
+        position = np.array([msg.pose.position.x, msg.pose.position.y, msg.pose.position.z], dtype=float)
+        if not np.all(np.isfinite(position)):
+            return
+        noise = float(self.get_parameter("noise_sigma").value)
+        if noise > 0.0:
+            position = position + self.rng.normal(0.0, noise, 3)
+
+        out = ObjectPose()
+        # Keep the simulator's own stamp: it is the instant the "observation" is valid for, which is exactly
+        # what TargetManager looks up TF at.  stamp_offset backdates it to imitate pipeline latency.
+        offset = float(self.get_parameter("stamp_offset").value)
+        stamp_ns = int(msg.header.stamp.sec) * 1_000_000_000 + int(msg.header.stamp.nanosec)
+        stamp_ns -= int(offset * 1e9)
+        out.header.stamp.sec = stamp_ns // 1_000_000_000
+        out.header.stamp.nanosec = stamp_ns % 1_000_000_000
+        out.header.frame_id = msg.header.frame_id or "base_link"
+        out.object_id = str(self.get_parameter("object_id").value)
+        out.pose.position.x, out.pose.position.y, out.pose.position.z = (float(v) for v in position)
+        out.pose.orientation = msg.pose.orientation
+        sigma = float(self.get_parameter("position_sigma").value)
+        if sigma > 0.0:
+            for i in range(3):
+                out.covariance[i * 6 + i] = sigma * sigma
+        out.confidence = float(self.get_parameter("confidence").value)
+        valid_for = float(self.get_parameter("valid_for").value)
+        if valid_for > 0.0:
+            end = stamp_ns + int(valid_for * 1e9)
+            out.valid_until.sec = end // 1_000_000_000
+            out.valid_until.nanosec = end % 1_000_000_000
+        out.source = str(self.get_parameter("source").value)
+        self.sequence += 1
+        out.sequence = self.sequence
+        self.publisher.publish(out)
+
+
+def main(args=None) -> None:
+    from rclpy.signals import SignalHandlerOptions
+    rclpy.init(args=args, signal_handler_options=SignalHandlerOptions.NO)
+    node = SimObjectPose()
+    stop = [False]
+
+    def handler(signum, frame):
+        del signum, frame
+        stop[0] = True
+
+    signal.signal(signal.SIGINT, handler)
+    signal.signal(signal.SIGTERM, handler)
+    try:
+        while rclpy.ok() and not stop[0]:
+            rclpy.spin_once(node, timeout_sec=0.1)
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

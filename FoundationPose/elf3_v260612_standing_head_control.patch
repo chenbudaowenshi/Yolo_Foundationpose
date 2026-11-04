@@ -1,0 +1,3265 @@
+diff --git a/src/bxi_example_py_elf3/bxi_example_py_elf3/bxi_example_demo.py b/src/bxi_example_py_elf3/bxi_example_py_elf3/bxi_example_demo.py
+index 8bc04359b17914ec6c9427a3347fedd18a6823ed..4ec79714c26b42807a7328fb7cc5ceead87147ee 100644
+--- a/src/bxi_example_py_elf3/bxi_example_py_elf3/bxi_example_demo.py
++++ b/src/bxi_example_py_elf3/bxi_example_py_elf3/bxi_example_demo.py
+@@ -26,6 +26,17 @@ from bxi_example_py_elf3.inference.beyondmimic import *
+ from bxi_example_py_elf3.inference.normal import *
+ from bxi_example_py_elf3.inference.amp import *
+ from bxi_example_py_elf3.utils.hot_reload import HotReloadMixin
++from bxi_example_py_elf3.utils.head_override import (
++    HEAD_DEFAULT_POSITION,
++    HEAD_JOINT_NAMES,
++    HEAD_MAX_SPEED_RAD_PER_SEC,
++    HeadCommandOverride,
++    append_head_command,
++    extract_body_feedback,
++    extract_head_feedback,
++    head_override_permitted,
++    limit_head_position_from_feedback,
++)
+ from bxi_example_py_elf3.utils.state_machine import (
+     RobotStateMachine,
+     RemoteEventAdapter,
+@@ -71,6 +82,9 @@ joint_name = (
+     "r_wrist_z_joint",
+ )
+ 
++hardware_joint_name = joint_name + HEAD_JOINT_NAMES
++hardware_dof_num = len(hardware_joint_name)
++
+ joint_nominal_pos = np.array([   # 指定的固定关节角度
+     0.0, 0.0, 0.0,
+     -0.4,0.0,0.0,0.8,-0.4,0.0,
+@@ -120,6 +134,19 @@ class BxiExample(HotReloadMixin, Node):
+         # 加载运行参数
+         self.load_files()
+ 
++        self.head_override = HeadCommandOverride(
++            timeout_sec=0.2,
++            release_sec=0.2,
++        )
++        self.head_feedback_position = HEAD_DEFAULT_POSITION.copy()
++        self.head_feedback_received = False
++        self.head_feedback_received_at = float("-inf")
++        self.head_feedback_timeout_sec = 0.1
++        self._head_last_output_at = None
++        self._last_actuator_layout_warning_at = float("-inf")
++        self._last_head_override_error = ""
++        self._head_override_last_active = False
++
+         # 加载模型
+         self.load_models()
+ 
+@@ -183,6 +210,11 @@ class BxiExample(HotReloadMixin, Node):
+ 
+         # 定时器初始化
+         self.step = 0
++        self._reset_future = None
++        self._reset_future_step = None
++        self._reset_requested_at = 0.0
++        self._reset_retry_at = 0.0
++        self._reset_last_warning_at = float("-inf")
+         self.dt = 0.02  # loop @50Hz
+         self.inference_period = self.dt
+         self.inference_timeout_tolerance = 0.005
+@@ -226,6 +258,11 @@ class BxiExample(HotReloadMixin, Node):
+         self.declare_parameter("/hot_reload", False)
+         self.hot_reload_enabled = bool(self.get_parameter("/hot_reload").value)
+ 
++        self.declare_parameter("/enable_head_control", False)
++        self.enable_head_control = bool(
++            self.get_parameter("/enable_head_control").value
++        )
++
+     def load_models(self):
+         data_dir = os.path.join(
+             get_package_share_directory("bxi_example_py_elf3"),
+@@ -318,6 +355,14 @@ class BxiExample(HotReloadMixin, Node):
+         self.joy_sub = self.create_subscription(
+             bxiMsg.MotionCommands, "motion_commands", self.joy_callback, qos
+         )
++        self.motor_override_sub = None
++        if self.enable_head_control:
++            self.motor_override_sub = self.create_subscription(
++                bxiMsg.ActuatorCmds,
++                self.topic_prefix + "actuators_cmds_override",
++                self.motor_override_callback,
++                qos,
++            )
+ 
+         self.rest_srv = self.create_client(
+             bxiSrv.RobotReset, self.topic_prefix + "robot_reset"
+@@ -332,20 +377,32 @@ class BxiExample(HotReloadMixin, Node):
+         self.lock_in = Lock()
+         self.lock_ou = self.lock_in  # Lock()
+ 
++        if self.enable_head_control:
++            self.get_logger().warning(
++                "HEAD-ENABLED FULL-BODY MODE: external override is restricted "
++                "to head_z_joint/head_y_joint"
++            )
++            self.get_logger().info(
++                "head override input: topic={}actuators_cmds_override, "
++                "timeout=0.200s, release_blend=0.200s".format(
++                    self.topic_prefix
++                )
++            )
++
+     def timer_callback(self):
+         # ptyhon 与 rclpy 多线程不太友好，这里使用定时间+简易状态机运行a
+         events = []
+         if self.step == 0:
+-            self.robot_reset(1, False)  # first reset
+-            print("robot reset 1!")
+-            self.step = 1
++            if self.robot_reset(1, False):
++                self.get_logger().info("robot reset step 1 confirmed")
++                self.step = 1
+             return
+         elif self.step == 1 and self.loop_count >= (1.0 / self.dt):  # 延迟2s
+-            self.robot_reset(2, True)  # first reset
+-            print("robot reset 2!")
+-            self.loop_count = 0
+-            self.step = 2
+-            self.reset_inference_timeout_monitor()
++            if self.robot_reset(2, True):
++                self.get_logger().info("robot reset step 2 confirmed")
++                self.loop_count = 0
++                self.step = 2
++                self.reset_inference_timeout_monitor()
+             return
+ 
+         if self.step == 2:
+@@ -385,12 +442,82 @@ class BxiExample(HotReloadMixin, Node):
+         msg = bxiMsg.ActuatorCmds()
+         msg.header.frame_id = robot_name
+         msg.header.stamp = self.get_clock().now().to_msg()
+-        msg.actuators_name = joint_name
+-        msg.pos = dof_pos_target.tolist()
+-        msg.vel = np.zeros(dof_num, dtype=np.float32).tolist()
+-        msg.torque = np.zeros(dof_num, dtype=np.float32).tolist()
+-        msg.kp = joint_kp.tolist()
+-        msg.kd = joint_kd.tolist()
++        body_position = np.asarray(dof_pos_target, dtype=np.float32)
++        body_kp = np.asarray(joint_kp, dtype=np.float32)
++        body_kd = np.asarray(joint_kd, dtype=np.float32)
++        expected_body_shape = (dof_num,)
++        if any(
++            values.shape != expected_body_shape
++            for values in (body_position, body_kp, body_kd)
++        ) or not all(
++            np.all(np.isfinite(values))
++            for values in (body_position, body_kp, body_kd)
++        ):
++            self.get_logger().error(
++                "refusing malformed 29-joint body target: pos={}, kp={}, kd={}".format(
++                    body_position.shape,
++                    body_kp.shape,
++                    body_kd.shape,
++                )
++            )
++            return
++
++        if not self.enable_head_control:
++            msg.actuators_name = joint_name
++            msg.pos = body_position.tolist()
++            msg.vel = np.zeros(dof_num, dtype=np.float32).tolist()
++            msg.torque = np.zeros(dof_num, dtype=np.float32).tolist()
++            msg.kp = body_kp.tolist()
++            msg.kd = body_kd.tolist()
++            self.act_pub.publish(msg)
++            return
++
++        state_name = self.state_name_by_id.get(self.state, "")
++        now = time.monotonic()
++        with self.lock_in:
++            override_permitted = head_override_permitted(
++                reset_step=self.step,
++                state_name=state_name,
++                in_transition=self.state_machine.in_transition,
++                feedback_received=self.head_feedback_received,
++                feedback_received_at=self.head_feedback_received_at,
++                now=now,
++                feedback_timeout_sec=self.head_feedback_timeout_sec,
++            )
++            head_feedback_position = self.head_feedback_position.copy()
++            head_position, head_kp, head_kd = self.head_override.apply(
++                head_feedback_position,
++                np.zeros(2, dtype=np.float32),
++                np.zeros(2, dtype=np.float32),
++                now=now,
++                permitted=override_permitted,
++            )
++
++        elapsed = self.dt
++        if self._head_last_output_at is not None:
++            elapsed = min(max(now - self._head_last_output_at, 0.0), self.dt)
++        self._head_last_output_at = now
++        head_position = limit_head_position_from_feedback(
++            head_position,
++            head_feedback_position,
++            maximum_speed=HEAD_MAX_SPEED_RAD_PER_SEC,
++            elapsed=elapsed,
++        )
++
++        full_position, full_kp, full_kd = append_head_command(
++            body_position,
++            body_kp,
++            body_kd,
++            head_position,
++            head_kp,
++            head_kd,
++        )
++        msg.actuators_name = hardware_joint_name
++        msg.pos = full_position.tolist()
++        msg.vel = np.zeros(hardware_dof_num, dtype=np.float32).tolist()
++        msg.torque = np.zeros(hardware_dof_num, dtype=np.float32).tolist()
++        msg.kp = full_kp.tolist()
++        msg.kd = full_kd.tolist()
+         self.act_pub.publish(msg)
+ 
+     def publish_state_machine_info_if_due(self, events):
+@@ -431,15 +558,83 @@ class BxiExample(HotReloadMixin, Node):
+         self.state_machine_info_pub.publish(msg)
+ 
+     def robot_reset(self, reset_step, release):
++        """Return True only after the requested reset receives a success reply."""
++        now = time.monotonic()
++
++        if self._reset_future is not None:
++            if self._reset_future_step != reset_step:
++                self.get_logger().error(
++                    "reset sequencing error: waiting for step {}, requested {}".format(
++                        self._reset_future_step,
++                        reset_step,
++                    )
++                )
++                return False
++
++            if not self._reset_future.done():
++                if now - self._reset_requested_at <= 2.0:
++                    return False
++                self._reset_future.cancel()
++                self._reset_future = None
++                self._reset_future_step = None
++                self._reset_retry_at = now + 1.0
++                self.get_logger().error(
++                    "robot reset step {} response timed out; retrying".format(
++                        reset_step
++                    )
++                )
++                return False
++
++            future = self._reset_future
++            self._reset_future = None
++            self._reset_future_step = None
++            try:
++                response = future.result()
++            except Exception as error:
++                self._reset_retry_at = now + 1.0
++                self.get_logger().error(
++                    "robot reset step {} service failed: {}; retrying".format(
++                        reset_step,
++                        error,
++                    )
++                )
++                return False
++            if response is None or not bool(getattr(response, "is_success", False)):
++                self._reset_retry_at = now + 1.0
++                self.get_logger().error(
++                    "robot reset step {} was rejected; retrying".format(
++                        reset_step
++                    )
++                )
++                return False
++            return True
++
++        if now < self._reset_retry_at:
++            return False
++        if not self.rest_srv.service_is_ready():
++            if now - self._reset_last_warning_at >= 2.0:
++                self.get_logger().info("robot reset service not available; waiting")
++                self._reset_last_warning_at = now
++            return False
++
+         req = bxiSrv.RobotReset.Request()
+         req.reset_step = reset_step
+         req.release = release
+         req.header.frame_id = robot_name
+-
+-        while not self.rest_srv.wait_for_service(timeout_sec=1.0):
+-            print("service not available, waiting again...")
+-
+-        self.rest_srv.call_async(req)
++        try:
++            self._reset_future = self.rest_srv.call_async(req)
++        except Exception as error:
++            self._reset_retry_at = now + 1.0
++            self.get_logger().error(
++                "cannot request robot reset step {}: {}; retrying".format(
++                    reset_step,
++                    error,
++                )
++            )
++            return False
++        self._reset_future_step = reset_step
++        self._reset_requested_at = now
++        return False
+ 
+     def sim_robot_reset(self):
+         req = bxiSrv.SimulationReset.Request()
+@@ -478,15 +673,58 @@ class BxiExample(HotReloadMixin, Node):
+             self.qvel[:] = np.array(joint_vel[:])
+ 
+     def actuator_callback(self, msg):
+-        joint_pos = msg.position
+-        joint_vel = msg.velocity
+-        joint_tor = msg.effort
+-        drv_temperature = msg.driver_temperature
+-        motor_temperature = msg.motor_temperature
++        if not self.enable_head_control:
++            with self.lock_in:
++                self.qpos[:] = np.asarray(msg.position, dtype=np.float64)[:dof_num]
++                self.qvel[:] = np.asarray(msg.velocity, dtype=np.float64)[:dof_num]
++            return
++
++        now = time.monotonic()
++        try:
++            body_position, body_velocity = extract_body_feedback(
++                msg.name,
++                msg.position,
++                msg.velocity,
++                joint_name,
++            )
++        except (TypeError, ValueError) as error:
++            with self.lock_in:
++                self.head_feedback_received = False
++                self.head_override.cancel()
++                self._head_override_last_active = False
++            if now - self._last_actuator_layout_warning_at >= 2.0:
++                self.get_logger().error(
++                    "head-enabled actuator feedback rejected: {}".format(error)
++                )
++                self._last_actuator_layout_warning_at = now
++            return
++
++        try:
++            head_position = extract_head_feedback(
++                msg.name,
++                msg.position,
++                msg.velocity,
++            )
++        except (TypeError, ValueError) as error:
++            with self.lock_in:
++                self.qpos[:] = body_position
++                self.qvel[:] = body_velocity
++                self.head_feedback_received = False
++                self.head_override.cancel()
++                self._head_override_last_active = False
++            if now - self._last_actuator_layout_warning_at >= 2.0:
++                self.get_logger().error(
++                    "head actuator feedback rejected: {}".format(error)
++                )
++                self._last_actuator_layout_warning_at = now
++            return
+ 
+         with self.lock_in:
+-            self.qpos[:] = np.array(joint_pos[:])
+-            self.qvel[:] = np.array(joint_vel[:])
++            self.qpos[:] = body_position
++            self.qvel[:] = body_velocity
++            self.head_feedback_position[:] = head_position
++            self.head_feedback_received = True
++            self.head_feedback_received_at = now
+ 
+     def joy_callback(self, msg):
+         with self.lock_in:
+@@ -503,6 +741,74 @@ class BxiExample(HotReloadMixin, Node):
+         if self.step < 2:
+             return
+ 
++    def motor_override_callback(self, msg):
++        """Accept only bounded two-axis position commands for the head."""
++        names = tuple(msg.actuators_name)
++        if not names:
++            if msg.pos or msg.kp or msg.kd or msg.vel or msg.torque:
++                with self.lock_in:
++                    self.head_override.cancel()
++                    self._head_override_last_active = False
++                self._warn_head_override(
++                    "empty actuators_name releases only when all arrays are empty"
++                )
++                return
++            with self.lock_in:
++                self.head_override.clear()
++            if self._head_override_last_active:
++                self.get_logger().info("head override release requested")
++            self._head_override_last_active = False
++            self._last_head_override_error = ""
++            return
++
++        try:
++            with self.lock_in:
++                now = time.monotonic()
++                permitted = head_override_permitted(
++                    reset_step=self.step,
++                    state_name=self.state_name_by_id.get(self.state, ""),
++                    in_transition=self.state_machine.in_transition,
++                    feedback_received=self.head_feedback_received,
++                    feedback_received_at=self.head_feedback_received_at,
++                    now=now,
++                    feedback_timeout_sec=self.head_feedback_timeout_sec,
++                )
++                if not permitted:
++                    self.head_override.cancel()
++                    self._head_override_last_active = False
++                    raise ValueError(
++                        "head override safety gate is closed; wait for normal "
++                        "state and fresh feedback"
++                    )
++                submitted = self.head_override.submit(
++                    names,
++                    msg.pos,
++                    msg.kp,
++                    msg.kd,
++                    velocity=msg.vel,
++                    torque=msg.torque,
++                    received_at=now,
++                )
++        except (TypeError, ValueError) as error:
++            with self.lock_in:
++                self.head_override.cancel()
++            self._head_override_last_active = False
++            self._warn_head_override(str(error))
++            return
++
++        self._last_head_override_error = ""
++        if not self._head_override_last_active:
++            self.get_logger().info(
++                "head override active for joints: {}".format(submitted)
++            )
++        self._head_override_last_active = True
++
++    def _warn_head_override(self, message):
++        if message == self._last_head_override_error:
++            return
++        self._last_head_override_error = message
++        self.get_logger().warning("invalid head override: {}".format(message))
++
+     def imu_callback(self, msg):
+         quat = msg.orientation
+         avel = msg.angular_velocity
+diff --git a/src/bxi_example_py_elf3/bxi_example_py_elf3/head_control.py b/src/bxi_example_py_elf3/bxi_example_py_elf3/head_control.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..2af3f407d43c61cbbd38d057f3a509193142b54b
+--- /dev/null
++++ b/src/bxi_example_py_elf3/bxi_example_py_elf3/head_control.py
+@@ -0,0 +1,1102 @@
++#!/usr/bin/python3
++"""ROS 2 keyboard controller for the two ELF3 head joints.
++
++This node follows the named-joint override interface implemented by
++``bxi_example_py_elf3/bxi_example_demo.py``.  It never imports MuJoCo and
++never writes simulator controls directly.
++
++Simulation example::
++
++    conda deactivate
++    source /opt/ros/humble/setup.bash
++    source /opt/bxi/bxi_ros2_pkg/setup.bash
++    source /path/to/bxi_rl_controller_ros2_example/install/setup.bash
++    ros2 run bxi_example_py_elf3 elf3_head_control
++
++Supported full-body standing example (only after the patched controller has
++been deployed while the robot was safely landed, and the running hardware
++node is ``hardware_elf3_head``)::
++
++    ros2 run bxi_example_py_elf3 elf3_head_control \
++        --hardware --standing-full-body --step-deg 2 --max-speed-deg 10 \
++        --yaw-limit-deg 15 --pitch-limit-deg 10 --duration 30
++
++This legacy compatibility package deliberately supports hardware only through
++``--standing-full-body``.  It keeps the body controller and remote link in
++charge while strictly verifying every ROS endpoint before publishing a head
++command.  It must never be paired with a head-only launch on a standing robot.
++"""
++
++from __future__ import annotations
++
++import argparse
++import math
++import os
++import select
++import signal
++import sys
++import termios
++import time
++import tty
++from typing import Any, Dict, List, Optional, Sequence, Tuple
++
++
++ROBOT_NAME = "elf3"
++HEAD_YAW_JOINT = "head_z_joint"
++HEAD_PITCH_JOINT = "head_y_joint"
++HEAD_JOINT_NAMES = (HEAD_YAW_JOINT, HEAD_PITCH_JOINT)
++STANDING_HARDWARE_NODE = ("hardware_elf3_head", "/")
++STANDING_CONTROLLER_NODE = ("bxi_example_py_elf3_demo", "/")
++REMOTE_CONTROLLER_NODE = ("remote_controller", "/")
++
++FULL_BODY_STANDING_NODES = frozenset(
++    (STANDING_HARDWARE_NODE, STANDING_CONTROLLER_NODE, REMOTE_CONTROLLER_NODE)
++)
++FORBIDDEN_IN_STANDING_NODES = frozenset(
++    (
++        ("hardware_elf3_head_only", "/"),
++        ("bxi_example_py_elf3_head_only", "/"),
++        ("hardware_elf3", "/"),  # Vendor convention: head motors disabled.
++        ("bxi_example_py_elf3_mjlab", "/"),
++    )
++)
++
++# Limits from the ELF3 model in bxi_rl_controller_ros2_example.  The smaller
++# working limits leave a margin before the URDF hard stops.
++MECHANICAL_YAW_LIMIT = 1.57
++MECHANICAL_PITCH_LIMIT = 0.785
++FEEDBACK_LIMIT_TOLERANCE = 1.0e-3
++DEFAULT_YAW_LIMIT = math.radians(15.0)
++DEFAULT_PITCH_LIMIT = math.radians(10.0)
++
++DEFAULT_KP = 16.747
++DEFAULT_KD = 1.066
++DEFAULT_STEP = math.radians(2.0)
++DEFAULT_MAX_SPEED = math.radians(10.0)
++DEFAULT_PUBLISH_RATE = 50.0
++DEFAULT_FEEDBACK_TIMEOUT = 0.10
++
++KEY_HELP = """\
++ELF3 head controls (ROS 2 named-joint override):
++  Up / I       look up          Down / K     look down
++  Left / J     look left        Right / L    look right
++  C / Space    centre           R            release override
++  H / ?        show help        Q            quit
++"""
++
++ENVIRONMENT_HELP = """\
++Use the Ubuntu 22.04 system Python and source the ROS environments first:
++  conda deactivate
++  source /opt/ros/humble/setup.bash
++  source /opt/bxi/bxi_ros2_pkg/setup.bash
++  source /path/to/bxi_rl_controller_ros2_example/install/setup.bash
++  ros2 run bxi_example_py_elf3 elf3_head_control
++
++The BXI package supplies communication.msg.  If its setup.bash does not
++exist, install bxi_ros2_pkg as described in bxi_rl_controller_ros2_example/README.md,
++then run bash build.sh in bxi_rl_controller_ros2_example to create install/.
++"""
++
++
++class EnvironmentSetupError(RuntimeError):
++    """The active Python process cannot load the required ROS 2 packages."""
++
++
++def _finite(value: float, name: str) -> float:
++    value = float(value)
++    if not math.isfinite(value):
++        raise ValueError("{} must be finite".format(name))
++    return value
++
++
++def _clamp(value: float, lower: float, upper: float) -> float:
++    return max(lower, min(upper, value))
++
++
++def _limited_from_feedback(
++    measured: float,
++    target: float,
++    maximum_increment: float,
++    mechanical_limit: float,
++) -> float:
++    difference = _clamp(
++        target - measured,
++        -maximum_increment,
++        maximum_increment,
++    )
++    return _clamp(
++        measured + difference,
++        -mechanical_limit,
++        mechanical_limit,
++    )
++
++
++class HeadCommandState:
++    """ROS-independent head target and feedback watchdog state."""
++
++    def __init__(
++        self,
++        *,
++        yaw_limit: float,
++        pitch_limit: float,
++        key_step: float,
++        maximum_speed: float,
++        publish_rate: float,
++        feedback_timeout: float,
++        initial_yaw: Optional[float] = None,
++        initial_pitch: Optional[float] = None,
++    ) -> None:
++        self.yaw_limit = _finite(yaw_limit, "yaw limit")
++        self.pitch_limit = _finite(pitch_limit, "pitch limit")
++        self.key_step = _finite(key_step, "key step")
++        self.maximum_speed = _finite(maximum_speed, "maximum speed")
++        self.publish_rate = _finite(publish_rate, "publish rate")
++        self.feedback_timeout = _finite(
++            feedback_timeout, "feedback timeout"
++        )
++        if not 0.0 < self.yaw_limit <= MECHANICAL_YAW_LIMIT:
++            raise ValueError("yaw limit is outside the ELF3 mechanical limit")
++        if not 0.0 < self.pitch_limit <= MECHANICAL_PITCH_LIMIT:
++            raise ValueError("pitch limit is outside the ELF3 mechanical limit")
++        if self.key_step <= 0.0:
++            raise ValueError("key step must be positive")
++        if self.maximum_speed <= 0.0:
++            raise ValueError("maximum speed must be positive")
++        if self.publish_rate <= 0.0:
++            raise ValueError("publish rate must be positive")
++        if self.feedback_timeout <= 0.0:
++            raise ValueError("feedback timeout must be positive")
++
++        self.initial_yaw = (
++            None if initial_yaw is None else _finite(initial_yaw, "initial yaw")
++        )
++        self.initial_pitch = (
++            None
++            if initial_pitch is None
++            else _finite(initial_pitch, "initial pitch")
++        )
++        if self.initial_yaw is not None and abs(self.initial_yaw) > self.yaw_limit:
++            raise ValueError("initial yaw exceeds the configured working limit")
++        if (
++            self.initial_pitch is not None
++            and abs(self.initial_pitch) > self.pitch_limit
++        ):
++            raise ValueError("initial pitch exceeds the configured working limit")
++
++        self.feedback_received = False
++        self.last_feedback_at = float("-inf")
++        self.measured_yaw = 0.0
++        self.measured_pitch = 0.0
++        self.target_yaw = 0.0
++        self.target_pitch = 0.0
++        self.active = False
++
++    @property
++    def maximum_increment(self) -> float:
++        return self.maximum_speed / self.publish_rate
++
++    def update_feedback(
++        self,
++        names: Sequence[str],
++        positions: Sequence[float],
++        now: float,
++    ) -> bool:
++        """Store named feedback; return True only on first valid update."""
++        timestamp = _finite(now, "feedback timestamp")
++        if len(names) != len(positions):
++            raise ValueError(
++                "actuator state name/position lengths differ: {} != {}".format(
++                    len(names), len(positions)
++                )
++            )
++
++        head_positions: Dict[str, float] = {}
++        for name, position in zip(names, positions):
++            if name in HEAD_JOINT_NAMES:
++                if name in head_positions:
++                    raise ValueError(
++                        "actuator state contains duplicate head joint: {}".format(
++                            name
++                        )
++                    )
++                head_positions[name] = _finite(
++                    position, "{} position".format(name)
++                )
++        missing = [name for name in HEAD_JOINT_NAMES if name not in head_positions]
++        if missing:
++            raise ValueError(
++                "actuator state does not contain head joints: {}".format(
++                    ", ".join(missing)
++                )
++            )
++
++        raw_yaw = head_positions[HEAD_YAW_JOINT]
++        raw_pitch = head_positions[HEAD_PITCH_JOINT]
++        if abs(raw_yaw) > MECHANICAL_YAW_LIMIT + FEEDBACK_LIMIT_TOLERANCE:
++            raise ValueError(
++                "{} feedback {:+.4f} rad exceeds mechanical limit".format(
++                    HEAD_YAW_JOINT, raw_yaw
++                )
++            )
++        if abs(raw_pitch) > MECHANICAL_PITCH_LIMIT + FEEDBACK_LIMIT_TOLERANCE:
++            raise ValueError(
++                "{} feedback {:+.4f} rad exceeds mechanical limit".format(
++                    HEAD_PITCH_JOINT, raw_pitch
++                )
++            )
++
++        yaw = _clamp(
++            raw_yaw,
++            -MECHANICAL_YAW_LIMIT,
++            MECHANICAL_YAW_LIMIT,
++        )
++        pitch = _clamp(
++            raw_pitch,
++            -MECHANICAL_PITCH_LIMIT,
++            MECHANICAL_PITCH_LIMIT,
++        )
++        first = not self.feedback_received
++        self.feedback_received = True
++        self.last_feedback_at = timestamp
++        self.measured_yaw = yaw
++        self.measured_pitch = pitch
++
++        if first:
++            self.target_yaw = (
++                _clamp(yaw, -self.yaw_limit, self.yaw_limit)
++                if self.initial_yaw is None
++                else self.initial_yaw
++            )
++            self.target_pitch = (
++                _clamp(pitch, -self.pitch_limit, self.pitch_limit)
++                if self.initial_pitch is None
++                else self.initial_pitch
++            )
++            # Merely starting the node must not seize the head.  Keyboard
++            # input activates it; an explicit CLI target opts into startup.
++            self.active = (
++                self.initial_yaw is not None or self.initial_pitch is not None
++            )
++        return first
++
++    def feedback_is_fresh(self, now: float) -> bool:
++        return self.feedback_received and (
++            _finite(now, "current timestamp") - self.last_feedback_at
++            <= self.feedback_timeout
++        )
++
++    def release(self) -> bool:
++        """Deactivate once; True means one empty ROS message must be sent."""
++        if not self.active:
++            return False
++        self.active = False
++        if self.feedback_received:
++            self.target_yaw = _clamp(
++                self.measured_yaw, -self.yaw_limit, self.yaw_limit
++            )
++            self.target_pitch = _clamp(
++                self.measured_pitch, -self.pitch_limit, self.pitch_limit
++            )
++        return True
++
++    def apply_action(self, action: str, now: float) -> str:
++        """Apply a keyboard action and report active/waiting/released."""
++        if action == "release":
++            return "released" if self.release() else "inactive"
++        if not self.feedback_is_fresh(now):
++            return "waiting"
++
++        # Reacquisition always starts from current measured feedback.  This
++        # avoids jumping back to a target retained before an explicit release.
++        if not self.active:
++            self.target_yaw = _clamp(
++                self.measured_yaw, -self.yaw_limit, self.yaw_limit
++            )
++            self.target_pitch = _clamp(
++                self.measured_pitch, -self.pitch_limit, self.pitch_limit
++            )
++            self.active = True
++
++        if action == "left":
++            self.target_yaw += self.key_step
++        elif action == "right":
++            self.target_yaw -= self.key_step
++        elif action == "up":
++            self.target_pitch -= self.key_step
++        elif action == "down":
++            self.target_pitch += self.key_step
++        elif action == "centre":
++            self.target_yaw = 0.0
++            self.target_pitch = 0.0
++        else:
++            raise ValueError("unknown head action: {}".format(action))
++
++        self.target_yaw = _clamp(
++            self.target_yaw, -self.yaw_limit, self.yaw_limit
++        )
++        self.target_pitch = _clamp(
++            self.target_pitch, -self.pitch_limit, self.pitch_limit
++        )
++        return "active"
++
++    def next_command(self, now: float) -> Optional[Tuple[float, float]]:
++        """Return one feedback-relative, speed-limited yaw/pitch command."""
++        if not self.active or not self.feedback_is_fresh(now):
++            return None
++        increment = self.maximum_increment
++        return (
++            _limited_from_feedback(
++                self.measured_yaw,
++                self.target_yaw,
++                increment,
++                MECHANICAL_YAW_LIMIT,
++            ),
++            _limited_from_feedback(
++                self.measured_pitch,
++                self.target_pitch,
++                increment,
++                MECHANICAL_PITCH_LIMIT,
++            ),
++        )
++
++
++_ESCAPE_ACTIONS = {
++    b"\x1b[A": "up",
++    b"\x1b[B": "down",
++    b"\x1b[C": "right",
++    b"\x1b[D": "left",
++}
++_BYTE_ACTIONS = {
++    b"i": "up",
++    b"I": "up",
++    b"k": "down",
++    b"K": "down",
++    b"j": "left",
++    b"J": "left",
++    b"l": "right",
++    b"L": "right",
++    b"c": "centre",
++    b"C": "centre",
++    b" ": "centre",
++    b"r": "release",
++    b"R": "release",
++    b"h": "help",
++    b"H": "help",
++    b"?": "help",
++    b"q": "quit",
++    b"Q": "quit",
++}
++
++
++class KeyboardReader:
++    """Non-blocking POSIX keyboard reader that restores terminal settings."""
++
++    def __init__(self, stream: Any = None) -> None:
++        self.stream = sys.stdin if stream is None else stream
++        self.fd: Optional[int] = None
++        self.saved_attributes: Any = None
++        self.buffer = b""
++
++    def __enter__(self):
++        if not hasattr(self.stream, "fileno"):
++            raise RuntimeError("standard input has no file descriptor")
++        self.fd = int(self.stream.fileno())
++        if not os.isatty(self.fd):
++            raise RuntimeError(
++                "keyboard control needs a terminal; use --no-keyboard for a ROS-only node"
++            )
++        self.saved_attributes = termios.tcgetattr(self.fd)
++        tty.setcbreak(self.fd)
++        return self
++
++    def __exit__(self, exc_type, exc_value, traceback) -> None:
++        if self.fd is not None and self.saved_attributes is not None:
++            termios.tcsetattr(
++                self.fd,
++                termios.TCSADRAIN,
++                self.saved_attributes,
++            )
++
++    def poll(self) -> List[str]:
++        if self.fd is None:
++            return []
++        while True:
++            readable, _, _ = select.select([self.fd], [], [], 0.0)
++            if not readable:
++                break
++            chunk = os.read(self.fd, 64)
++            if not chunk:
++                break
++            self.buffer += chunk
++
++        actions: List[str] = []
++        while self.buffer:
++            matched = False
++            for sequence, action in _ESCAPE_ACTIONS.items():
++                if self.buffer.startswith(sequence):
++                    actions.append(action)
++                    self.buffer = self.buffer[len(sequence) :]
++                    matched = True
++                    break
++            if matched:
++                continue
++            if any(sequence.startswith(self.buffer) for sequence in _ESCAPE_ACTIONS):
++                break
++            first = self.buffer[:1]
++            self.buffer = self.buffer[1:]
++            action = _BYTE_ACTIONS.get(first)
++            if action is not None:
++                actions.append(action)
++        return actions
++
++
++def _load_ros_modules():
++    if sys.version_info[:2] != (3, 10):
++        raise EnvironmentSetupError(
++            "Active Python is {}.{}; ROS 2 Humble on Ubuntu 22.04 uses Python 3.10.\n\n{}".format(
++                sys.version_info[0], sys.version_info[1], ENVIRONMENT_HELP
++            )
++        )
++
++    try:
++        import rclpy
++        from rclpy.node import Node
++        from rclpy.qos import QoSProfile, qos_profile_sensor_data
++        from rclpy.signals import SignalHandlerOptions
++    except Exception as error:
++        raise EnvironmentSetupError(
++            "Cannot import ROS 2 rclpy: {}\n\n{}".format(error, ENVIRONMENT_HELP)
++        ) from error
++
++    try:
++        from communication.msg import ActuatorCmds, ActuatorStates
++    except Exception as error:
++        raise EnvironmentSetupError(
++            "Cannot import BXI communication.msg: {}\n\n{}".format(
++                error, ENVIRONMENT_HELP
++            )
++        ) from error
++
++    return (
++        rclpy,
++        Node,
++        QoSProfile,
++        qos_profile_sensor_data,
++        SignalHandlerOptions,
++        ActuatorCmds,
++        ActuatorStates,
++    )
++
++
++def _populate_command_message(
++    message: Any,
++    *,
++    stamp: Any,
++    yaw: float,
++    pitch: float,
++) -> Any:
++    message.header.frame_id = ROBOT_NAME
++    message.header.stamp = stamp
++    message.actuators_name = list(HEAD_JOINT_NAMES)
++    message.pos = [float(yaw), float(pitch)]
++    message.vel = [0.0, 0.0]
++    message.torque = [0.0, 0.0]
++    message.kp = [DEFAULT_KP, DEFAULT_KP]
++    message.kd = [DEFAULT_KD, DEFAULT_KD]
++    return message
++
++
++def _populate_release_message(message: Any, *, stamp: Any) -> Any:
++    message.header.frame_id = ROBOT_NAME
++    message.header.stamp = stamp
++    message.actuators_name = []
++    message.pos = []
++    message.vel = []
++    message.torque = []
++    message.kp = []
++    message.kd = []
++    return message
++
++
++def _make_node_class(
++    Node: Any,
++    QoSProfile: Any,
++    qos_profile_sensor_data: Any,
++    ActuatorCmds: Any,
++    ActuatorStates: Any,
++):
++    class RosHeadControlNode(Node):
++        def __init__(self, args: argparse.Namespace) -> None:
++            super().__init__("elf3_head_control")
++            self.topic_prefix = "hardware/" if args.hardware else "simulation/"
++            self.command_topic = self.topic_prefix + "actuators_cmds_override"
++            self.feedback_topic = self.topic_prefix + "actuator_states"
++            self.primary_command_topic = self.topic_prefix + "actuators_cmds"
++            self.state_machine_info_topic = (
++                self.topic_prefix + "state_machine_info"
++            )
++            self.motion_command_topic = "motion_commands"
++            self.state = HeadCommandState(
++                yaw_limit=math.radians(args.yaw_limit_deg),
++                pitch_limit=math.radians(args.pitch_limit_deg),
++                key_step=math.radians(args.step_deg),
++                maximum_speed=math.radians(args.max_speed_deg),
++                publish_rate=args.rate,
++                feedback_timeout=args.feedback_timeout,
++                initial_yaw=(
++                    None if args.yaw_deg is None else math.radians(args.yaw_deg)
++                ),
++                initial_pitch=(
++                    None
++                    if args.pitch_deg is None
++                    else math.radians(args.pitch_deg)
++                ),
++            )
++            qos = QoSProfile(
++                depth=1,
++                durability=qos_profile_sensor_data.durability,
++                reliability=qos_profile_sensor_data.reliability,
++            )
++            self.command_publisher = self.create_publisher(
++                ActuatorCmds,
++                self.command_topic,
++                qos,
++            )
++            self.feedback_subscription = self.create_subscription(
++                ActuatorStates,
++                self.feedback_topic,
++                self._feedback_callback,
++                qos,
++            )
++            self.publish_timer = self.create_timer(
++                1.0 / args.rate,
++                self._publish_timer_callback,
++            )
++            self.quit_requested = False
++            self.started_at = time.monotonic()
++            self.last_wait_warning_at = float("-inf")
++            self.last_bad_feedback_warning_at = float("-inf")
++            self.last_no_consumer_warning_at = float("-inf")
++            self.stale_feedback_warned = False
++            self.publisher_conflict_detected = False
++            self.require_hardware_graph = bool(args.hardware)
++            self.full_body_standing_mode = bool(
++                args.hardware and getattr(args, "allow_full_hardware", False)
++            )
++            self.last_hardware_mode_warning_at = float("-inf")
++            self.hardware_graph_verified = False
++
++            self.get_logger().info(
++                "ELF3 ROS head controller ready: feedback=/{} override=/{}".format(
++                    self.feedback_topic,
++                    self.command_topic,
++                )
++            )
++            if self.full_body_standing_mode:
++                self.get_logger().warning(
++                    "FULL-BODY STANDING MODE: the body controller remains active; "
++                    "keep the remote at zero velocity, use a rated support, and "
++                    "keep the emergency stop accessible"
++                )
++
++        @staticmethod
++        def _endpoint_owners(endpoint_info: Sequence[Any]) -> set:
++            owners = set()
++            for endpoint in endpoint_info:
++                namespace = endpoint.node_namespace or "/"
++                owners.add((endpoint.node_name, namespace))
++            return owners
++
++        @staticmethod
++        def _qualified_node_name(owner: Tuple[str, str]) -> str:
++            name, namespace = owner
++            return "{}/{}".format(namespace.rstrip("/"), name).replace("//", "/")
++
++        @classmethod
++        def _endpoint_status(
++            cls,
++            label: str,
++            endpoint_info: Sequence[Any],
++            expected_owner: Tuple[str, str],
++        ) -> Tuple[bool, str]:
++            owners = cls._endpoint_owners(endpoint_info)
++            expected = {expected_owner}
++            if len(endpoint_info) != 1 or owners != expected:
++                found = ", ".join(
++                    sorted(cls._qualified_node_name(owner) for owner in owners)
++                ) or "none"
++                expected_name = cls._qualified_node_name(expected_owner)
++                return False, "{} must belong only to {}; found {}".format(
++                    label,
++                    expected_name,
++                    found,
++                )
++            return True, ""
++
++        def _hardware_graph_status(self) -> Tuple[bool, str]:
++            required = FULL_BODY_STANDING_NODES
++            forbidden_nodes = FORBIDDEN_IN_STANDING_NODES
++            hardware_owner = STANDING_HARDWARE_NODE
++            controller_owner = STANDING_CONTROLLER_NODE
++            verified_detail = "head-enabled full-body ROS graph verified"
++
++            visible = set(self.get_node_names_and_namespaces())
++            missing = required - visible
++            if missing:
++                names = ", ".join(
++                    sorted(self._qualified_node_name(owner) for owner in missing)
++                )
++                return False, "required hardware nodes are not visible: {}".format(names)
++            forbidden = forbidden_nodes & visible
++            if forbidden:
++                names = ", ".join(sorted(name for name, _namespace in forbidden))
++                return False, "incompatible hardware nodes are present: {}".format(names)
++
++            endpoint_checks = (
++                (
++                    "hardware feedback publisher",
++                    self.get_publishers_info_by_topic(self.feedback_topic),
++                    hardware_owner,
++                ),
++                (
++                    "primary command publisher",
++                    self.get_publishers_info_by_topic(self.primary_command_topic),
++                    controller_owner,
++                ),
++                (
++                    "hardware command subscriber",
++                    self.get_subscriptions_info_by_topic(
++                        self.primary_command_topic
++                    ),
++                    hardware_owner,
++                ),
++                (
++                    "override subscriber",
++                    self.get_subscriptions_info_by_topic(self.command_topic),
++                    controller_owner,
++                ),
++            )
++            for label, endpoints, owner in endpoint_checks:
++                ready, detail = self._endpoint_status(label, endpoints, owner)
++                if not ready:
++                    return False, detail
++
++            standing_checks = (
++                (
++                    "state-machine status publisher",
++                    self.get_publishers_info_by_topic(
++                        self.state_machine_info_topic
++                    ),
++                    STANDING_CONTROLLER_NODE,
++                ),
++                (
++                    "remote motion publisher",
++                    self.get_publishers_info_by_topic(self.motion_command_topic),
++                    REMOTE_CONTROLLER_NODE,
++                ),
++                (
++                    "controller motion subscriber",
++                    self.get_subscriptions_info_by_topic(
++                        self.motion_command_topic
++                    ),
++                    STANDING_CONTROLLER_NODE,
++                ),
++            )
++            for label, endpoints, owner in standing_checks:
++                ready, detail = self._endpoint_status(label, endpoints, owner)
++                if not ready:
++                    return False, detail
++
++            return True, verified_detail
++
++        def _feedback_callback(self, message: Any) -> None:
++            now = time.monotonic()
++            try:
++                first = self.state.update_feedback(
++                    message.name,
++                    message.position,
++                    now,
++                )
++            except (TypeError, ValueError) as error:
++                if now - self.last_bad_feedback_warning_at >= 2.0:
++                    self.get_logger().warning(
++                        "head feedback is not usable: {}".format(error)
++                    )
++                    self.last_bad_feedback_warning_at = now
++                self.release_override("invalid head feedback")
++                return
++
++            if first:
++                self.get_logger().info(
++                    "head feedback acquired: yaw={:+.2f} deg, pitch={:+.2f} deg".format(
++                        math.degrees(self.state.measured_yaw),
++                        math.degrees(self.state.measured_pitch),
++                    )
++                )
++                if not self.state.active:
++                    self.get_logger().info(
++                        "press a direction key or C to activate the head override"
++                    )
++            elif self.stale_feedback_warned:
++                self.get_logger().info(
++                    "head feedback recovered; press a direction key or C to reacquire"
++                )
++                self.stale_feedback_warned = False
++
++        def _publish_timer_callback(self) -> None:
++            now = time.monotonic()
++            if self.count_publishers(self.command_topic) > 1:
++                if not self.publisher_conflict_detected:
++                    self.get_logger().error(
++                        "another publisher is using /{}; stopping this node to "
++                        "avoid conflicting head commands".format(self.command_topic)
++                    )
++                    self.publisher_conflict_detected = True
++                # Do not publish a clear message here: it would also clear the
++                # other controller's newest command.  Our last sample expires
++                # through the example controller's 0.2 s ingress timeout.
++                self.state.release()
++                self.quit_requested = True
++                return
++
++            if self.require_hardware_graph:
++                hardware_ready, hardware_detail = self._hardware_graph_status()
++                if not hardware_ready:
++                    self.hardware_graph_verified = False
++                    if self.state.active:
++                        self.release_override("verified hardware graph disappeared")
++                    if now - self.last_hardware_mode_warning_at >= 2.0:
++                        self.get_logger().warning(
++                            "hardware safety gate is closed: {}".format(
++                                hardware_detail
++                            )
++                        )
++                        self.last_hardware_mode_warning_at = now
++                    return
++                if not self.hardware_graph_verified:
++                    self.get_logger().info(
++                        "{}; keyboard control is enabled".format(hardware_detail)
++                    )
++                    self.hardware_graph_verified = True
++
++            if not self.state.feedback_received:
++                if now - self.last_wait_warning_at >= 2.0:
++                    self.get_logger().warning(
++                        "waiting for both head joints on /{}".format(
++                            self.feedback_topic
++                        )
++                    )
++                    self.last_wait_warning_at = now
++                return
++
++            if not self.state.feedback_is_fresh(now):
++                if self.release_override("head feedback timed out"):
++                    self.stale_feedback_warned = True
++                return
++
++            if (
++                self.command_publisher.get_subscription_count() == 0
++                and now - self.started_at >= 2.0
++                and now - self.last_no_consumer_warning_at >= 5.0
++            ):
++                self.get_logger().warning(
++                    "no subscriber on /{}; start the bxi_example_demo controller "
++                    "from this example repository".format(self.command_topic)
++                )
++                self.last_no_consumer_warning_at = now
++
++            command = self.state.next_command(now)
++            if command is None:
++                return
++            message = _populate_command_message(
++                ActuatorCmds(),
++                stamp=self.get_clock().now().to_msg(),
++                yaw=command[0],
++                pitch=command[1],
++            )
++            self.command_publisher.publish(message)
++
++        def release_override(self, reason: str) -> bool:
++            """Publish exactly one clear message for the active generation."""
++            if self.count_publishers(self.command_topic) > 1:
++                was_active = self.state.release()
++                if was_active:
++                    self.get_logger().warning(
++                        "head override abandoned without publishing clear because "
++                        "another publisher is using /{}".format(self.command_topic)
++                    )
++                return False
++            if not self.state.release():
++                return False
++            message = _populate_release_message(
++                ActuatorCmds(),
++                stamp=self.get_clock().now().to_msg(),
++            )
++            self.command_publisher.publish(message)
++            self.get_logger().info("head override released: {}".format(reason))
++            return True
++
++        def handle_action(self, action: str) -> None:
++            if action == "help":
++                print("\n" + KEY_HELP, flush=True)
++                return
++            if action == "quit":
++                self.quit_requested = True
++                return
++            if action == "release":
++                self.release_override("keyboard request")
++                return
++
++            result = self.state.apply_action(action, time.monotonic())
++            if result == "waiting":
++                self.get_logger().warning(
++                    "cannot move the head until fresh joint feedback is available"
++                )
++                return
++            self.get_logger().info(
++                "head target: yaw={:+.1f} deg, pitch={:+.1f} deg".format(
++                    math.degrees(self.state.target_yaw),
++                    math.degrees(self.state.target_pitch),
++                )
++            )
++
++    return RosHeadControlNode
++
++
++def build_parser() -> argparse.ArgumentParser:
++    parser = argparse.ArgumentParser(
++        description=(
++            "Control ELF3 head_y/head_z through the ROS 2 named-joint override"
++        )
++    )
++    parser.add_argument(
++        "--hardware",
++        action="store_true",
++        help="use hardware/ topics (default is the safer simulation/ topics)",
++    )
++    parser.add_argument(
++        "--standing-full-body",
++        "--allow-full-hardware",
++        dest="allow_full_hardware",
++        action="store_true",
++        help=(
++            "keep a patched, head-enabled full-body controller active while "
++            "strictly verifying its ROS graph (advanced supported test only)"
++        ),
++    )
++    parser.add_argument(
++        "--yaw-deg",
++        type=float,
++        default=None,
++        help="optional initial yaw target; positive looks left",
++    )
++    parser.add_argument(
++        "--pitch-deg",
++        type=float,
++        default=None,
++        help="optional initial pitch target; negative looks up",
++    )
++    parser.add_argument(
++        "--step-deg",
++        type=float,
++        default=math.degrees(DEFAULT_STEP),
++        help="target change per key press (default: 2 degrees)",
++    )
++    parser.add_argument(
++        "--max-speed-deg",
++        type=float,
++        default=math.degrees(DEFAULT_MAX_SPEED),
++        help="maximum feedback-relative target speed (default: 10 deg/s)",
++    )
++    parser.add_argument(
++        "--yaw-limit-deg",
++        type=float,
++        default=math.degrees(DEFAULT_YAW_LIMIT),
++        help="working yaw limit (default: 15 degrees)",
++    )
++    parser.add_argument(
++        "--pitch-limit-deg",
++        type=float,
++        default=math.degrees(DEFAULT_PITCH_LIMIT),
++        help="working pitch limit (default: 10 degrees)",
++    )
++    parser.add_argument(
++        "--rate",
++        type=float,
++        default=DEFAULT_PUBLISH_RATE,
++        help="override publication rate in Hz (default: 50)",
++    )
++    parser.add_argument(
++        "--feedback-timeout",
++        type=float,
++        default=DEFAULT_FEEDBACK_TIMEOUT,
++        help="release when feedback is older than this many seconds (default: 0.10)",
++    )
++    parser.add_argument(
++        "--no-keyboard",
++        action="store_true",
++        help="run without reading stdin (useful with --yaw-deg/--pitch-deg)",
++    )
++    parser.add_argument(
++        "--duration",
++        type=float,
++        default=None,
++        help="quit and release after this many seconds",
++    )
++    return parser
++
++
++def validate_args(
++    args: argparse.Namespace,
++    parser: argparse.ArgumentParser,
++) -> None:
++    if args.allow_full_hardware and not args.hardware:
++        parser.error("--standing-full-body requires --hardware")
++    if args.hardware and not args.allow_full_hardware:
++        parser.error(
++            "hardware control in this legacy package requires "
++            "--standing-full-body"
++        )
++    if (
++        args.hardware
++        and (args.yaw_deg is not None or args.pitch_deg is not None)
++    ):
++        parser.error(
++            "automatic --yaw-deg/--pitch-deg targets are disabled for the "
++            "hardware safety modes"
++        )
++
++    values = (
++        ("--step-deg", args.step_deg),
++        ("--max-speed-deg", args.max_speed_deg),
++        ("--yaw-limit-deg", args.yaw_limit_deg),
++        ("--pitch-limit-deg", args.pitch_limit_deg),
++        ("--rate", args.rate),
++        ("--feedback-timeout", args.feedback_timeout),
++    )
++    for name, value in values:
++        if not math.isfinite(value) or value <= 0.0:
++            parser.error("{} must be positive and finite".format(name))
++    for name, value in (("--yaw-deg", args.yaw_deg), ("--pitch-deg", args.pitch_deg)):
++        if value is not None and not math.isfinite(value):
++            parser.error("{} must be finite".format(name))
++
++    if args.step_deg > 20.0:
++        parser.error("--step-deg cannot exceed 20")
++    if args.max_speed_deg > 10.0:
++        parser.error("--max-speed-deg cannot exceed the server limit of 10")
++    if not 20.0 <= args.rate <= 100.0:
++        parser.error("--rate must be between 20 and 100 Hz")
++    if args.feedback_timeout > 0.15:
++        parser.error("--feedback-timeout cannot exceed 0.15 s")
++    if args.yaw_limit_deg > math.degrees(MECHANICAL_YAW_LIMIT):
++        parser.error("--yaw-limit-deg exceeds the ELF3 model limit")
++    if args.pitch_limit_deg > math.degrees(MECHANICAL_PITCH_LIMIT):
++        parser.error("--pitch-limit-deg exceeds the ELF3 model limit")
++    if args.yaw_deg is not None and abs(args.yaw_deg) > args.yaw_limit_deg:
++        parser.error("--yaw-deg exceeds --yaw-limit-deg")
++    if args.pitch_deg is not None and abs(args.pitch_deg) > args.pitch_limit_deg:
++        parser.error("--pitch-deg exceeds --pitch-limit-deg")
++    if args.duration is not None and (
++        not math.isfinite(args.duration) or args.duration <= 0.0
++    ):
++        parser.error("--duration must be positive and finite")
++
++
++def _run_loop(
++    rclpy: Any,
++    node: Any,
++    keyboard: Optional[KeyboardReader],
++    duration: Optional[float],
++) -> None:
++    started_at = time.monotonic()
++    while rclpy.ok() and not node.quit_requested:
++        rclpy.spin_once(node, timeout_sec=0.02)
++        if keyboard is not None:
++            for action in keyboard.poll():
++                node.handle_action(action)
++        if duration is not None and time.monotonic() - started_at >= duration:
++            node.quit_requested = True
++
++
++def main(argv: Optional[Sequence[str]] = None) -> int:
++    parser = build_parser()
++    args = parser.parse_args(argv)
++    validate_args(args, parser)
++
++    try:
++        (
++            rclpy,
++            Node,
++            QoSProfile,
++            qos_profile_sensor_data,
++            SignalHandlerOptions,
++            ActuatorCmds,
++            ActuatorStates,
++        ) = _load_ros_modules()
++    except EnvironmentSetupError as error:
++        print("ERROR: {}".format(error), file=sys.stderr)
++        return 2
++
++    RosHeadControlNode = _make_node_class(
++        Node,
++        QoSProfile,
++        qos_profile_sensor_data,
++        ActuatorCmds,
++        ActuatorStates,
++    )
++
++    node = None
++    stop_requested = {"value": False}
++
++    def request_stop(signum, frame) -> None:
++        del signum, frame
++        stop_requested["value"] = True
++        if node is not None:
++            node.quit_requested = True
++
++    old_sigint = signal.signal(signal.SIGINT, request_stop)
++    old_sigterm = signal.signal(signal.SIGTERM, request_stop)
++    ros_initialized = False
++    exit_code = 0
++    try:
++        rclpy.init(args=None, signal_handler_options=SignalHandlerOptions.NO)
++        ros_initialized = True
++        node = RosHeadControlNode(args)
++        if not args.no_keyboard:
++            print(KEY_HELP, flush=True)
++            with KeyboardReader() as keyboard:
++                _run_loop(rclpy, node, keyboard, args.duration)
++        else:
++            _run_loop(rclpy, node, None, args.duration)
++    except KeyboardInterrupt:
++        stop_requested["value"] = True
++    except RuntimeError as error:
++        print("ERROR: {}".format(error), file=sys.stderr)
++        exit_code = 1
++    finally:
++        if node is not None:
++            try:
++                released = node.release_override("node shutdown")
++                if released and rclpy.ok():
++                    # Keep the context alive briefly so the single clear sample
++                    # reaches DDS.  The controller's 0.2 s timeout is fallback.
++                    rclpy.spin_once(node, timeout_sec=0.05)
++            except Exception as error:
++                print(
++                    "WARNING: could not publish final head release: {}".format(error),
++                    file=sys.stderr,
++                )
++            node.destroy_node()
++        if ros_initialized and rclpy.ok():
++            rclpy.shutdown()
++        signal.signal(signal.SIGINT, old_sigint)
++        signal.signal(signal.SIGTERM, old_sigterm)
++
++    if stop_requested["value"]:
++        print("Head controller stopped; override released.")
++    return exit_code
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/src/bxi_example_py_elf3/bxi_example_py_elf3/utils/head_override.py b/src/bxi_example_py_elf3/bxi_example_py_elf3/utils/head_override.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f40495d08493ff35610885ec13454c8bf719ab4b
+--- /dev/null
++++ b/src/bxi_example_py_elf3/bxi_example_py_elf3/utils/head_override.py
+@@ -0,0 +1,424 @@
++"""Fail-closed two-joint head override for the legacy ELF3 controller."""
++
++from __future__ import annotations
++
++import math
++import time
++from typing import Sequence, Tuple
++
++import numpy as np
++
++
++HEAD_JOINT_NAMES = ("head_z_joint", "head_y_joint")
++HEAD_POSITION_LIMITS = np.asarray((1.57, 0.785), dtype=np.float32)
++HEAD_DEFAULT_POSITION = np.zeros(2, dtype=np.float32)
++HEAD_DEFAULT_KP = np.asarray((16.747, 16.747), dtype=np.float32)
++HEAD_DEFAULT_KD = np.asarray((1.066, 1.066), dtype=np.float32)
++HEAD_MAX_KP = float(HEAD_DEFAULT_KP[0])
++HEAD_MAX_KD = float(HEAD_DEFAULT_KD[0])
++HEAD_MAX_SPEED_RAD_PER_SEC = math.radians(10.0)
++HEAD_FEEDBACK_LIMIT_TOLERANCE = 1.0e-3
++LEGACY_BODY_DOF_NUM = 29
++
++
++def _feedback_sequences(
++    names: Sequence[str],
++    position: object,
++    velocity: object,
++) -> tuple[tuple[str, ...], tuple[object, ...], tuple[object, ...]]:
++    feedback_names = tuple(names)
++    try:
++        positions = tuple(position)
++        velocities = tuple(velocity)
++    except TypeError as error:
++        raise ValueError("actuator feedback position/velocity must be sequences") from error
++    if len(positions) != len(feedback_names) or len(velocities) != len(
++        feedback_names
++    ):
++        raise ValueError(
++            "actuator feedback name/position/velocity lengths differ: "
++            "{}/{}/{}".format(
++                len(feedback_names),
++                len(positions),
++                len(velocities),
++            )
++        )
++    return feedback_names, positions, velocities
++
++
++def _unique_indices(
++    feedback_names: tuple[str, ...],
++    required_names: Sequence[str],
++    label: str,
++) -> np.ndarray:
++    indices = []
++    for name in required_names:
++        matches = tuple(
++            index
++            for index, feedback_name in enumerate(feedback_names)
++            if feedback_name == name
++        )
++        if not matches:
++            raise ValueError(
++                "actuator feedback is missing {} joint: {}".format(label, name)
++            )
++        if len(matches) != 1:
++            raise ValueError(
++                "actuator feedback contains duplicate {} joint: {}".format(
++                    label, name
++                )
++            )
++        indices.append(matches[0])
++    return np.asarray(indices, dtype=np.intp)
++
++
++def extract_body_feedback(
++    names: Sequence[str],
++    position: object,
++    velocity: object,
++    body_names: Sequence[str],
++) -> tuple[np.ndarray, np.ndarray]:
++    """Extract a finite named body sample independently of head health."""
++    feedback_names, positions, velocities = _feedback_sequences(
++        names, position, velocity
++    )
++    body_joint_names = tuple(body_names)
++    if len(body_joint_names) != LEGACY_BODY_DOF_NUM:
++        raise ValueError(
++            "legacy body feedback layout must contain exactly {} joints".format(
++                LEGACY_BODY_DOF_NUM
++            )
++        )
++    body_indices = _unique_indices(feedback_names, body_joint_names, "body")
++    try:
++        body_position = np.asarray(
++            [positions[index] for index in body_indices], dtype=np.float64
++        )
++        body_velocity = np.asarray(
++            [velocities[index] for index in body_indices], dtype=np.float64
++        )
++    except (TypeError, ValueError) as error:
++        raise ValueError("body actuator feedback must be numeric") from error
++    if not (
++        np.all(np.isfinite(body_position))
++        and np.all(np.isfinite(body_velocity))
++    ):
++        raise ValueError("body actuator feedback contains NaN or Inf")
++    return body_position.copy(), body_velocity.copy()
++
++
++def extract_head_feedback(
++    names: Sequence[str],
++    position: object,
++    velocity: object,
++) -> np.ndarray:
++    """Extract a finite, mechanically bounded two-axis head sample."""
++    feedback_names, positions, velocities = _feedback_sequences(
++        names, position, velocity
++    )
++    head_indices = _unique_indices(feedback_names, HEAD_JOINT_NAMES, "head")
++    try:
++        head_position = np.asarray(
++            [positions[index] for index in head_indices], dtype=np.float64
++        )
++        head_velocity = np.asarray(
++            [velocities[index] for index in head_indices], dtype=np.float64
++        )
++    except (TypeError, ValueError) as error:
++        raise ValueError("head actuator feedback must be numeric") from error
++    if not np.all(np.isfinite(head_position)) or not np.all(
++        np.isfinite(head_velocity)
++    ):
++        raise ValueError("head actuator feedback contains NaN or Inf")
++    if np.any(
++        np.abs(head_position)
++        > HEAD_POSITION_LIMITS.astype(np.float64)
++        + HEAD_FEEDBACK_LIMIT_TOLERANCE
++    ):
++        raise ValueError("head feedback exceeds the ELF3 mechanical limit")
++
++    return head_position.copy()
++
++
++def limit_head_position_from_feedback(
++    target: object,
++    feedback: object,
++    *,
++    maximum_speed: float,
++    elapsed: float,
++) -> np.ndarray:
++    """Apply the server-side speed limit relative to measured head position."""
++    target_array = _finite_vector("target pos", target)
++    feedback_array = _finite_vector("feedback pos", feedback)
++    speed = float(maximum_speed)
++    period = float(elapsed)
++    if not math.isfinite(speed) or speed <= 0.0:
++        raise ValueError("head maximum speed must be positive and finite")
++    if not math.isfinite(period) or period < 0.0:
++        raise ValueError("head command elapsed time must be finite and non-negative")
++    maximum_increment = speed * period
++    limited = feedback_array + np.clip(
++        target_array - feedback_array,
++        -maximum_increment,
++        maximum_increment,
++    )
++    return np.clip(limited, -HEAD_POSITION_LIMITS, HEAD_POSITION_LIMITS)
++
++
++def head_override_permitted(
++    *,
++    reset_step: int,
++    state_name: str,
++    in_transition: bool,
++    feedback_received: bool,
++    feedback_received_at: float,
++    now: float,
++    feedback_timeout_sec: float,
++) -> bool:
++    """Gate the head whenever reset, zero-torque, or feedback is unsafe."""
++    timestamp = float(now)
++    received_at = float(feedback_received_at)
++    timeout = float(feedback_timeout_sec)
++    if not math.isfinite(timestamp) or not math.isfinite(timeout) or timeout <= 0.0:
++        raise ValueError("head feedback gate times must be finite and positive")
++    feedback_age = timestamp - received_at
++    return bool(
++        reset_step == 2
++        and state_name != "zero_torque"
++        and not in_transition
++        and feedback_received
++        and math.isfinite(received_at)
++        and 0.0 <= feedback_age <= timeout
++    )
++
++
++def append_head_command(
++    body_position: object,
++    body_kp: object,
++    body_kd: object,
++    head_position: object,
++    head_kp: object,
++    head_kd: object,
++) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
++    """Append two validated head fields without changing any body element."""
++    body_arrays = tuple(
++        np.asarray(values, dtype=np.float32) for values in (
++            body_position,
++            body_kp,
++            body_kd,
++        )
++    )
++    if any(array.ndim != 1 for array in body_arrays):
++        raise ValueError("body command fields must be one-dimensional")
++    if len({array.shape for array in body_arrays}) != 1:
++        raise ValueError("body command fields must have matching shapes")
++    if body_arrays[0].shape != (LEGACY_BODY_DOF_NUM,):
++        raise ValueError(
++            "legacy body command fields must contain exactly {} joints".format(
++                LEGACY_BODY_DOF_NUM
++            )
++        )
++    if not all(np.all(np.isfinite(array)) for array in body_arrays):
++        raise ValueError("body command fields must contain only finite values")
++
++    return (
++        np.concatenate((body_arrays[0], _finite_vector("pos", head_position))),
++        np.concatenate((body_arrays[1], _finite_vector("kp", head_kp))),
++        np.concatenate((body_arrays[2], _finite_vector("kd", head_kd))),
++    )
++
++
++def _finite_vector(
++    field: str,
++    values: object,
++    *,
++    allow_empty_as_zero: bool = False,
++) -> np.ndarray:
++    array = np.asarray(values, dtype=np.float32)
++    if allow_empty_as_zero and array.shape == (0,):
++        return np.zeros(2, dtype=np.float32)
++    if array.shape != (2,):
++        raise ValueError(
++            f"head override {field} has shape {array.shape}, expected (2,)"
++        )
++    if not np.all(np.isfinite(array)):
++        raise ValueError(
++            f"head override {field} must contain only finite values"
++        )
++    return array.copy()
++
++
++class HeadCommandOverride:
++    """Validate, time-limit and smoothly release one two-axis command."""
++
++    def __init__(self, *, timeout_sec: float = 0.2, release_sec: float = 0.2):
++        self.timeout_sec = float(timeout_sec)
++        self.release_sec = float(release_sec)
++        if not math.isfinite(self.timeout_sec) or self.timeout_sec <= 0.0:
++            raise ValueError("head override timeout must be positive and finite")
++        if not math.isfinite(self.release_sec) or self.release_sec < 0.0:
++            raise ValueError(
++                "head override release duration must be finite and non-negative"
++            )
++
++        self._position = HEAD_DEFAULT_POSITION.copy()
++        self._kp = HEAD_DEFAULT_KP.copy()
++        self._kd = HEAD_DEFAULT_KD.copy()
++        self._received_at = float("-inf")
++        self._command_active = False
++        self._was_applied = False
++        self._release_active = False
++        self._release_started_at = 0.0
++        self._release_position = HEAD_DEFAULT_POSITION.copy()
++        self._release_kp = HEAD_DEFAULT_KP.copy()
++        self._release_kd = HEAD_DEFAULT_KD.copy()
++        self._last_position = HEAD_DEFAULT_POSITION.copy()
++        self._last_kp = HEAD_DEFAULT_KP.copy()
++        self._last_kd = HEAD_DEFAULT_KD.copy()
++
++    def submit(
++        self,
++        names: Sequence[str],
++        position: object,
++        kp: object,
++        kd: object,
++        *,
++        velocity: object = (),
++        torque: object = (),
++        received_at: float | None = None,
++    ) -> Tuple[str, str]:
++        command_names = tuple(names)
++        if len(command_names) != 2 or set(command_names) != set(HEAD_JOINT_NAMES):
++            raise ValueError(
++                "head override must contain exactly head_z_joint and head_y_joint"
++            )
++        if len(set(command_names)) != len(command_names):
++            raise ValueError("head override contains duplicate joints")
++
++        submitted_position = _finite_vector("pos", position)
++        submitted_kp = _finite_vector("kp", kp)
++        submitted_kd = _finite_vector("kd", kd)
++        submitted_velocity = _finite_vector(
++            "vel", velocity, allow_empty_as_zero=True
++        )
++        submitted_torque = _finite_vector(
++            "torque", torque, allow_empty_as_zero=True
++        )
++
++        indices = tuple(command_names.index(name) for name in HEAD_JOINT_NAMES)
++        submitted_position = submitted_position[list(indices)]
++        submitted_kp = submitted_kp[list(indices)]
++        submitted_kd = submitted_kd[list(indices)]
++        submitted_velocity = submitted_velocity[list(indices)]
++        submitted_torque = submitted_torque[list(indices)]
++
++        if np.any(np.abs(submitted_position) > HEAD_POSITION_LIMITS):
++            raise ValueError("head override position exceeds the mechanical limit")
++        if np.any(submitted_kp < 0.0) or np.any(submitted_kp > HEAD_MAX_KP):
++            raise ValueError(f"head override kp must be within [0, {HEAD_MAX_KP}]")
++        if np.any(submitted_kd < 0.0) or np.any(submitted_kd > HEAD_MAX_KD):
++            raise ValueError(f"head override kd must be within [0, {HEAD_MAX_KD}]")
++        if np.any(submitted_velocity != 0.0):
++            raise ValueError("head override velocity feed-forward must be zero")
++        if np.any(submitted_torque != 0.0):
++            raise ValueError("head override torque feed-forward must be zero")
++
++        timestamp = time.monotonic() if received_at is None else float(received_at)
++        if not math.isfinite(timestamp):
++            raise ValueError("head override receive time must be finite")
++
++        self._position[:] = submitted_position
++        self._kp[:] = submitted_kp
++        self._kd[:] = submitted_kd
++        self._received_at = timestamp
++        self._command_active = True
++        self._release_active = False
++        return HEAD_JOINT_NAMES
++
++    def clear(self) -> None:
++        """Request a normal release that may use the configured blend."""
++        self._command_active = False
++
++    def cancel(self) -> None:
++        """Immediately discard command and release history for a safety gate."""
++        self._command_active = False
++        self._was_applied = False
++        self._release_active = False
++        self._received_at = float("-inf")
++
++    def apply(
++        self,
++        base_position: object,
++        base_kp: object,
++        base_kd: object,
++        *,
++        now: float | None = None,
++        permitted: bool = True,
++    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
++        timestamp = time.monotonic() if now is None else float(now)
++        if not math.isfinite(timestamp):
++            raise ValueError("head override apply time must be finite")
++        base_position_array = _finite_vector("base pos", base_position)
++        base_kp_array = _finite_vector("base kp", base_kp)
++        base_kd_array = _finite_vector("base kd", base_kd)
++
++        command_age = timestamp - self._received_at
++        fresh = self._command_active and 0.0 <= command_age <= self.timeout_sec
++        if fresh and permitted:
++            self._last_position[:] = self._position
++            self._last_kp[:] = self._kp
++            self._last_kd[:] = self._kd
++            self._was_applied = True
++            self._release_active = False
++            return self._position.copy(), self._kp.copy(), self._kd.copy()
++
++        if not fresh:
++            self._command_active = False
++
++        if not permitted:
++            # Consume a command while the safety gate is closed so an old
++            # sample cannot reactivate when feedback/state health recovers.
++            self.cancel()
++            return base_position_array, base_kp_array, base_kd_array
++
++        if self._was_applied:
++            self._release_position[:] = self._last_position
++            self._release_kp[:] = self._last_kp
++            self._release_kd[:] = self._last_kd
++            self._release_started_at = timestamp
++            self._release_active = self.release_sec > 0.0
++            self._was_applied = False
++
++        if not self._release_active:
++            return base_position_array, base_kp_array, base_kd_array
++
++        elapsed = max(0.0, timestamp - self._release_started_at)
++        if elapsed >= self.release_sec:
++            self._release_active = False
++            return base_position_array, base_kp_array, base_kd_array
++
++        alpha = elapsed / self.release_sec
++        return (
++            self._release_position
++            + alpha * (base_position_array - self._release_position),
++            self._release_kp + alpha * (base_kp_array - self._release_kp),
++            self._release_kd + alpha * (base_kd_array - self._release_kd),
++        )
++
++
++__all__ = [
++    "HEAD_DEFAULT_KD",
++    "HEAD_DEFAULT_KP",
++    "HEAD_DEFAULT_POSITION",
++    "HEAD_FEEDBACK_LIMIT_TOLERANCE",
++    "HEAD_JOINT_NAMES",
++    "HEAD_MAX_SPEED_RAD_PER_SEC",
++    "HEAD_POSITION_LIMITS",
++    "LEGACY_BODY_DOF_NUM",
++    "HeadCommandOverride",
++    "append_head_command",
++    "extract_body_feedback",
++    "extract_head_feedback",
++    "head_override_permitted",
++    "limit_head_position_from_feedback",
++]
+diff --git a/src/bxi_example_py_elf3/bxi_example_py_elf3/utils/state_machine.py b/src/bxi_example_py_elf3/bxi_example_py_elf3/utils/state_machine.py
+index 999bcf5259204db5a7c970081e484ae7d9ed378d..0c2b37c8ab3ab44ac14811c2b4d844575171d98e 100644
+--- a/src/bxi_example_py_elf3/bxi_example_py_elf3/utils/state_machine.py
++++ b/src/bxi_example_py_elf3/bxi_example_py_elf3/utils/state_machine.py
+@@ -1,5 +1,6 @@
+ from dataclasses import dataclass, field
+ import os
++import tempfile
+ from typing import Any, Callable, Dict, Generic, Iterable, List, Optional, Set, Tuple, TypeVar
+ 
+ import yaml
+@@ -854,13 +855,27 @@ class RobotStateMachine(Generic[CtxT]):
+         dot_path = export_config.get("dot")
+         mermaid_path = export_config.get("mermaid")
+         if dot_path:
+-            self.export_dot(dot_path, initial_state_name)
+-            self._report_graph_diagnostic(GraphDiagnostic("info", f"state graph dot exported: {dot_path}"))
++            exported_path = self.export_dot(dot_path, initial_state_name)
++            if exported_path:
++                self._report_graph_diagnostic(
++                    GraphDiagnostic(
++                        "info", f"state graph dot exported: {exported_path}"
++                    )
++                )
+         if mermaid_path:
+-            self.export_mermaid(mermaid_path, initial_state_name)
+-            self._report_graph_diagnostic(GraphDiagnostic("info", f"state graph mermaid exported: {mermaid_path}"))
++            exported_path = self.export_mermaid(
++                mermaid_path, initial_state_name
++            )
++            if exported_path:
++                self._report_graph_diagnostic(
++                    GraphDiagnostic(
++                        "info", f"state graph mermaid exported: {exported_path}"
++                    )
++                )
+ 
+-    def export_dot(self, path: str, initial_state_name: Optional[str] = None) -> None:
++    def export_dot(
++        self, path: str, initial_state_name: Optional[str] = None
++    ) -> Optional[str]:
+         initial = initial_state_name or self.current_state_name
+         lines = [
+             "digraph RobotStateMachine {",
+@@ -877,9 +892,11 @@ class RobotStateMachine(Generic[CtxT]):
+             else:
+                 lines.append(f"  \"{from_state}\" -> \"{from_state}\" [style=dashed, label=\"{label}\"];")
+         lines.append("}")
+-        self._write_text(path, "\n".join(lines) + "\n")
++        return self._write_text(path, "\n".join(lines) + "\n")
+ 
+-    def export_mermaid(self, path: str, initial_state_name: Optional[str] = None) -> None:
++    def export_mermaid(
++        self, path: str, initial_state_name: Optional[str] = None
++    ) -> Optional[str]:
+         initial = initial_state_name or self.current_state_name
+         lines = [
+             "stateDiagram-v2",
+@@ -888,11 +905,81 @@ class RobotStateMachine(Generic[CtxT]):
+         for from_state, to_state, label, _rule in self._graph_edges():
+             target = to_state or from_state
+             lines.append(f"    {from_state} --> {target}: {label}")
+-        self._write_text(path, "\n".join(lines) + "\n")
+-
+-    def _write_text(self, path: str, text: str) -> None:
+-        directory = os.path.dirname(path)
+-        if directory:
+-            os.makedirs(directory, exist_ok=True)
+-        with open(path, "w", encoding="utf-8") as output_file:
+-            output_file.write(text)
++        return self._write_text(path, "\n".join(lines) + "\n")
++
++    def _write_text(self, path: str, text: str) -> Optional[str]:
++        try:
++            self._write_graph_file(path, text)
++            return path
++        except OSError as error:
++            first_error = error
++
++        basename = os.path.basename(path) or "state_machine.graph"
++        try:
++            fallback = self._write_process_graph_file(basename, text)
++        except OSError as fallback_error:
++            self._report_graph_diagnostic(
++                GraphDiagnostic(
++                    "warning",
++                    "state graph export skipped: cannot write {} ({}) or a "
++                    "secure process-scoped temporary file ({})".format(
++                        path,
++                        first_error,
++                        fallback_error,
++                    ),
++                )
++            )
++            return None
++
++        self._report_graph_diagnostic(
++            GraphDiagnostic(
++                "warning",
++                "state graph export could not write {} ({}); wrote {} instead".format(
++                    path,
++                    first_error,
++                    fallback,
++                ),
++            )
++        )
++        return fallback
++
++    @staticmethod
++    def _write_graph_file(path: str, text: str) -> None:
++        directory = os.path.dirname(path) or "."
++        os.makedirs(directory, exist_ok=True)
++        basename = os.path.basename(path) or "state_machine.graph"
++        descriptor, temporary_path = tempfile.mkstemp(
++            prefix=".{}.".format(basename),
++            dir=directory,
++            text=True,
++        )
++        try:
++            with os.fdopen(descriptor, "w", encoding="utf-8") as output_file:
++                output_file.write(text)
++            os.replace(temporary_path, path)
++        except BaseException:
++            try:
++                os.unlink(temporary_path)
++            except FileNotFoundError:
++                pass
++            raise
++
++    @staticmethod
++    def _write_process_graph_file(basename: str, text: str) -> str:
++        stem, suffix = os.path.splitext(basename)
++        descriptor, path = tempfile.mkstemp(
++            prefix="{}.uid{}.pid{}.".format(stem, os.geteuid(), os.getpid()),
++            suffix=suffix,
++            dir=tempfile.gettempdir(),
++            text=True,
++        )
++        try:
++            with os.fdopen(descriptor, "w", encoding="utf-8") as output_file:
++                output_file.write(text)
++        except BaseException:
++            try:
++                os.unlink(path)
++            except FileNotFoundError:
++                pass
++            raise
++        return path
+diff --git a/src/bxi_example_py_elf3/launch/example_demo_hw.launch.py b/src/bxi_example_py_elf3/launch/example_demo_hw.launch.py
+index d1f0aca7e92d537833d9a93feaa6185de648a151..9323854385a8b49f9a258ba1602931bce29abf5b 100755
+--- a/src/bxi_example_py_elf3/launch/example_demo_hw.launch.py
++++ b/src/bxi_example_py_elf3/launch/example_demo_hw.launch.py
+@@ -4,6 +4,8 @@ import fcntl
+ import atexit
+ from ament_index_python.packages import get_package_share_path
+ from launch import LaunchDescription
++from launch.actions import DeclareLaunchArgument, OpaqueFunction
++from launch.substitutions import LaunchConfiguration
+ from launch_ros.actions import Node
+ 
+ LOCK_FILE = "/tmp/bxi_example_hw.lock"
+@@ -77,6 +79,83 @@ def _acquire_lock():
+     _lock_fd = fd
+     atexit.register(_release_lock)
+ 
++
++def _parse_enable_head(value):
++    normalized = str(value).strip().lower()
++    if normalized in ("true", "1", "yes", "on"):
++        return True
++    if normalized in ("false", "0", "no", "off"):
++        return False
++    raise RuntimeError(
++        "enable_head must be explicitly true or false, got {!r}".format(value)
++    )
++
++
++def _hardware_mode(enable_head):
++    if enable_head:
++        return (
++            "hardware_elf3_head",
++            0x00000000,
++            "FULL_BODY_HEAD_ENABLED",
++            "enabled",
++        )
++    return (
++        "hardware_elf3",
++        0x60000000,
++        "FULL_BODY_HEAD_DISABLED",
++        "disabled",
++    )
++
++
++def _hardware_and_controller_nodes(context, state_machine_config):
++    enable_head = _parse_enable_head(
++        LaunchConfiguration("enable_head").perform(context)
++    )
++    node_name, motor_disable, mode, head_status = _hardware_mode(enable_head)
++
++    print(
++        "[bxi hardware config] mode={}, package=hardware_elf3, "
++        "executable=hardware_elf3, node={}, motor_disable=0x{:08X}, "
++        "body_motors=enabled, head_motors={}".format(
++            mode,
++            node_name,
++            motor_disable,
++            head_status,
++        ),
++        flush=True,
++    )
++
++    hardware_node = Node(
++        package="hardware_elf3",
++        executable="hardware_elf3",
++        name=node_name,
++        output="screen",
++        parameters=[
++            {
++                "hardware_config/imu": True,
++                "hardware_config/motor_pwr": True,
++                "hardware_config/motor_disable": motor_disable,
++            }
++        ],
++        emulate_tty=True,
++        arguments=[("__log_level:=debug")],
++    )
++    controller_node = Node(
++        package="bxi_example_py_elf3",
++        executable="bxi_example_py_elf3_demo",
++        name="bxi_example_py_elf3_demo",
++        output="screen",
++        parameters=[
++            {"/topic_prefix": "hardware/"},
++            {"/state_machine_config": state_machine_config},
++            {"/hot_reload": False},
++            {"/enable_head_control": enable_head},
++        ],
++        emulate_tty=True,
++        arguments=[("__log_level:=debug")],
++    )
++    return [hardware_node, controller_node]
++
+ def generate_launch_description():
+     _acquire_lock()
+ 
+@@ -87,29 +166,18 @@ def generate_launch_description():
+ 
+     return LaunchDescription(
+         [
+-            Node(
+-                package="hardware_elf3",
+-                executable="hardware_elf3",
+-                name="hardware_elf3",
+-                output="screen",
+-                parameters=[
+-                ],
+-                emulate_tty=True,
+-                arguments=[("__log_level:=debug")],
++            DeclareLaunchArgument(
++                "enable_head",
++                default_value="false",
++                description=(
++                    "Enable both ELF3 head motors and the bounded head override"
++                ),
+             ),
+-
+-            Node(
+-                package="bxi_example_py_elf3",
+-                executable="bxi_example_py_elf3_demo",
+-                name="bxi_example_py_elf3_demo",
+-                output="screen",
+-                parameters=[
+-                    {"/topic_prefix": "hardware/"},
+-                    {"/state_machine_config": state_machine_config},
+-                    {"/hot_reload": False},
+-                ],
+-                emulate_tty=True,
+-                arguments=[("__log_level:=debug")],
++            OpaqueFunction(
++                function=lambda context: _hardware_and_controller_nodes(
++                    context,
++                    state_machine_config,
++                )
+             ),
+         ]
+     )
+diff --git a/src/bxi_example_py_elf3/launch/example_launch_demo_hw.py b/src/bxi_example_py_elf3/launch/example_launch_demo_hw.py
+index d1f0aca7e92d537833d9a93feaa6185de648a151..c31209ce794951337eb817f1e3865d914bdd7dc2 100755
+--- a/src/bxi_example_py_elf3/launch/example_launch_demo_hw.py
++++ b/src/bxi_example_py_elf3/launch/example_launch_demo_hw.py
+@@ -1,115 +1,34 @@
++"""Compatibility alias for the canonical ELF3 full-body hardware launch."""
++
+ import os
+-import sys
+-import fcntl
+-import atexit
++
+ from ament_index_python.packages import get_package_share_path
+ from launch import LaunchDescription
+-from launch_ros.actions import Node
+-
+-LOCK_FILE = "/tmp/bxi_example_hw.lock"
+-_lock_fd = None
+-
+-
+-def _release_lock():
+-    global _lock_fd
+-    if _lock_fd is None:
+-        return
+-    fd = _lock_fd
+-    _lock_fd = None
+-    try:
+-        fcntl.flock(fd, fcntl.LOCK_UN)
+-    except OSError:
+-        pass
+-    try:
+-        os.close(fd)
+-    except OSError:
+-        pass
+-
+-
+-def _acquire_lock():
+-    global _lock_fd
+-    if _lock_fd is not None:
+-        return
++from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
++from launch.launch_description_sources import PythonLaunchDescriptionSource
++from launch.substitutions import LaunchConfiguration
+ 
+-    # Create the lock file world-writable so a different user (or root)
+-    # can reuse the same system-wide lock. Force umask to 0 so the 0o666
+-    # mode is honored on creation regardless of the caller's umask.
+-    old_umask = os.umask(0)
+-    try:
+-        try:
+-            fd = os.open(LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o666)
+-        except PermissionError as e:
+-            print(
+-                f"\n[ERROR] Cannot open lock file {LOCK_FILE}: {e}\n"
+-                f"        A stale lock file with restrictive permissions exists.\n"
+-                f"        Remove it and retry:  sudo rm {LOCK_FILE}\n",
+-                file=sys.stderr,
+-            )
+-            sys.exit(1)
+-    finally:
+-        os.umask(old_umask)
+-
+-    # Repair perms on a file left behind by an older version of this
+-    # script (no-op unless we are the owner or root).
+-    try:
+-        os.chmod(LOCK_FILE, 0o666)
+-    except OSError:
+-        pass
+-
+-    try:
+-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+-    except OSError:
+-        try:
+-            os.lseek(fd, 0, os.SEEK_SET)
+-            holder = os.read(fd, 64).decode("utf-8", errors="replace").strip() or "unknown"
+-        except OSError:
+-            holder = "unknown"
+-        os.close(fd)
+-        print(
+-            f"\n[ERROR] bxi_example_hw is already running (pid={holder})! "
+-            f"Please stop the existing instance before starting a new one.\n",
+-            file=sys.stderr,
+-        )
+-        sys.exit(1)
+-
+-    os.ftruncate(fd, 0)
+-    os.write(fd, str(os.getpid()).encode("utf-8"))
+-    _lock_fd = fd
+-    atexit.register(_release_lock)
+ 
+ def generate_launch_description():
+-    _acquire_lock()
+-
+-    state_machine_config = os.path.join(
++    canonical_launch = os.path.join(
+         get_package_share_path("bxi_example_py_elf3"),
+-        "config/elf3_state_machine.yaml",
++        "launch",
++        "example_demo_hw.launch.py",
+     )
+-
+     return LaunchDescription(
+         [
+-            Node(
+-                package="hardware_elf3",
+-                executable="hardware_elf3",
+-                name="hardware_elf3",
+-                output="screen",
+-                parameters=[
+-                ],
+-                emulate_tty=True,
+-                arguments=[("__log_level:=debug")],
++            DeclareLaunchArgument(
++                "enable_head",
++                default_value="false",
++                description=(
++                    "Enable both ELF3 head motors and the bounded head override"
++                ),
+             ),
+-
+-            Node(
+-                package="bxi_example_py_elf3",
+-                executable="bxi_example_py_elf3_demo",
+-                name="bxi_example_py_elf3_demo",
+-                output="screen",
+-                parameters=[
+-                    {"/topic_prefix": "hardware/"},
+-                    {"/state_machine_config": state_machine_config},
+-                    {"/hot_reload": False},
+-                ],
+-                emulate_tty=True,
+-                arguments=[("__log_level:=debug")],
++            IncludeLaunchDescription(
++                PythonLaunchDescriptionSource(canonical_launch),
++                launch_arguments={
++                    "enable_head": LaunchConfiguration("enable_head")
++                }.items(),
+             ),
+         ]
+     )
+diff --git a/src/bxi_example_py_elf3/setup.py b/src/bxi_example_py_elf3/setup.py
+index 2856d8334b779163f9ebafe5332072ea5098d19a..a05646934d3f63959fa4f66de09ae3c9c3bfcabf 100755
+--- a/src/bxi_example_py_elf3/setup.py
++++ b/src/bxi_example_py_elf3/setup.py
+@@ -71,6 +71,7 @@ setup(
+         'console_scripts': [
+             'bxi_example_py_elf3_mjlab = bxi_example_py_elf3.bxi_example_mjlab:main',
+             'bxi_example_py_elf3_demo = bxi_example_py_elf3.bxi_example_demo:main',
++            'elf3_head_control = bxi_example_py_elf3.head_control:main',
+         ],
+     },
+ )
+diff --git a/src/bxi_example_py_elf3/test/test_demo_head_output.py b/src/bxi_example_py_elf3/test/test_demo_head_output.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..bbcbfeca1568a0aa14b921688175695f211bcd24
+--- /dev/null
++++ b/src/bxi_example_py_elf3/test/test_demo_head_output.py
+@@ -0,0 +1,255 @@
++from threading import Lock
++from types import SimpleNamespace
++from types import ModuleType
++import importlib.util
++import sys
++import time
++
++from builtin_interfaces.msg import Time
++from communication.msg import ActuatorCmds
++import numpy as np
++import pytest
++
++# The controller's policy classes import these optional runtimes at module
++# load, but these tests never construct a policy or call inference.
++for _optional_module in ("onnx", "onnxruntime"):
++    if importlib.util.find_spec(_optional_module) is None:
++        sys.modules[_optional_module] = ModuleType(_optional_module)
++
++from bxi_example_py_elf3 import bxi_example_demo as demo
++from bxi_example_py_elf3.utils.head_override import (
++    HEAD_JOINT_NAMES,
++    HEAD_MAX_SPEED_RAD_PER_SEC,
++    HeadCommandOverride,
++)
++
++
++class _Publisher:
++    def __init__(self):
++        self.messages = []
++
++    def publish(self, message):
++        self.messages.append(message)
++
++
++class _Logger:
++    def __init__(self):
++        self.errors = []
++        self.infos = []
++
++    def error(self, message):
++        self.errors.append(message)
++
++    def info(self, message):
++        self.infos.append(message)
++
++
++class _Future:
++    def __init__(self, response):
++        self.response = response
++        self.cancelled = False
++
++    def done(self):
++        return True
++
++    def result(self):
++        return self.response
++
++    def cancel(self):
++        self.cancelled = True
++
++
++class _ResetClient:
++    def __init__(self, response):
++        self.response = response
++        self.requests = []
++
++    def service_is_ready(self):
++        return True
++
++    def call_async(self, request):
++        self.requests.append(request)
++        return _Future(self.response)
++
++
++def _controller_stub():
++    publisher = _Publisher()
++    logger = _Logger()
++    now = time.monotonic()
++    node = SimpleNamespace(
++        enable_head_control=True,
++        state=7,
++        state_name_by_id={7: "normal"},
++        step=2,
++        state_machine=SimpleNamespace(in_transition=False),
++        lock_in=Lock(),
++        head_feedback_received=True,
++        head_feedback_received_at=now,
++        head_feedback_timeout_sec=0.1,
++        head_feedback_position=np.asarray((0.2, -0.1), dtype=np.float32),
++        head_override=HeadCommandOverride(timeout_sec=0.2, release_sec=0.2),
++        _head_last_output_at=now - 0.02,
++        _last_actuator_layout_warning_at=float("-inf"),
++        dt=0.02,
++        qpos=np.zeros(demo.dof_num, dtype=np.float64),
++        qvel=np.zeros(demo.dof_num, dtype=np.float64),
++        act_pub=publisher,
++        get_clock=lambda: SimpleNamespace(
++            now=lambda: SimpleNamespace(to_msg=lambda: Time())
++        ),
++        get_logger=lambda: logger,
++    )
++    return node, publisher, logger
++
++
++def test_full_body_output_keeps_29_body_axes_and_leaves_idle_head_zero_gain():
++    node, publisher, _logger = _controller_stub()
++    body_position = np.linspace(-0.2, 0.2, demo.dof_num, dtype=np.float32)
++    body_kp = np.linspace(10.0, 20.0, demo.dof_num, dtype=np.float32)
++    body_kd = np.linspace(1.0, 2.0, demo.dof_num, dtype=np.float32)
++
++    demo.BxiExample.send_to_motor(node, body_position, body_kp, body_kd)
++
++    assert len(publisher.messages) == 1
++    message = publisher.messages[0]
++    assert tuple(message.actuators_name) == demo.joint_name + HEAD_JOINT_NAMES
++    assert len(message.pos) == len(message.vel) == len(message.torque) == 31
++    assert len(message.kp) == len(message.kd) == 31
++    assert message.pos[:29] == pytest.approx(body_position)
++    assert message.kp[:29] == pytest.approx(body_kp)
++    assert message.kd[:29] == pytest.approx(body_kd)
++    assert message.pos[-2:] == pytest.approx(node.head_feedback_position)
++    assert message.kp[-2:] == pytest.approx((0.0, 0.0))
++    assert message.kd[-2:] == pytest.approx((0.0, 0.0))
++    assert message.vel == pytest.approx(np.zeros(31))
++    assert message.torque == pytest.approx(np.zeros(31))
++
++
++def test_external_head_target_is_limited_server_side_before_31_axis_publish():
++    node, publisher, _logger = _controller_stub()
++    node.head_override.submit(
++        HEAD_JOINT_NAMES,
++        (1.0, -0.5),
++        (16.747, 16.747),
++        (1.066, 1.066),
++        received_at=time.monotonic(),
++    )
++
++    demo.BxiExample.send_to_motor(
++        node,
++        np.zeros(29, dtype=np.float32),
++        np.ones(29, dtype=np.float32),
++        np.ones(29, dtype=np.float32),
++    )
++
++    maximum_increment = HEAD_MAX_SPEED_RAD_PER_SEC * node.dt
++    assert publisher.messages[0].pos[-2:] == pytest.approx(
++        (
++            node.head_feedback_position[0] + maximum_increment,
++            node.head_feedback_position[1] - maximum_increment,
++        )
++    )
++
++
++def test_bad_head_feedback_closes_head_gate_but_keeps_body_feedback_current():
++    node, _publisher, logger = _controller_stub()
++    node.qpos[:] = 7.0
++    node.qvel[:] = 8.0
++    message = SimpleNamespace(
++        name=demo.hardware_joint_name,
++        position=[0.0] * 29 + [float("nan"), 0.0],
++        velocity=[0.0] * 31,
++    )
++
++    demo.BxiExample.actuator_callback(node, message)
++
++    assert node.head_feedback_received is False
++    assert node.qpos == pytest.approx(np.zeros(29))
++    assert node.qvel == pytest.approx(np.zeros(29))
++    assert len(logger.errors) == 1
++
++
++def test_bad_feedback_consumes_old_override_before_feedback_recovers():
++    node, publisher, _logger = _controller_stub()
++    node.head_override.submit(
++        HEAD_JOINT_NAMES,
++        (0.4, -0.2),
++        (16.747, 16.747),
++        (1.066, 1.066),
++        received_at=time.monotonic(),
++    )
++    demo.BxiExample.send_to_motor(
++        node,
++        np.zeros(29, dtype=np.float32),
++        np.ones(29, dtype=np.float32),
++        np.ones(29, dtype=np.float32),
++    )
++    publisher.messages.clear()
++    bad = SimpleNamespace(
++        name=demo.hardware_joint_name,
++        position=[0.0] * 30 + [float("nan")],
++        velocity=[0.0] * 31,
++    )
++    demo.BxiExample.actuator_callback(node, bad)
++
++    node.head_feedback_received = True
++    node.head_feedback_received_at = time.monotonic()
++    demo.BxiExample.send_to_motor(
++        node,
++        np.zeros(29, dtype=np.float32),
++        np.ones(29, dtype=np.float32),
++        np.ones(29, dtype=np.float32),
++    )
++
++    assert publisher.messages[0].kp[-2:] == pytest.approx((0.0, 0.0))
++    assert publisher.messages[0].kd[-2:] == pytest.approx((0.0, 0.0))
++
++
++def test_malformed_body_target_is_not_published():
++    node, publisher, logger = _controller_stub()
++    demo.BxiExample.send_to_motor(
++        node,
++        np.zeros(28, dtype=np.float32),
++        np.ones(28, dtype=np.float32),
++        np.ones(28, dtype=np.float32),
++    )
++
++    assert publisher.messages == []
++    assert len(logger.errors) == 1
++
++
++def test_reset_gate_advances_only_after_successful_service_response():
++    logger = _Logger()
++    client = _ResetClient(SimpleNamespace(is_success=True))
++    node = SimpleNamespace(
++        _reset_future=None,
++        _reset_future_step=None,
++        _reset_requested_at=0.0,
++        _reset_retry_at=0.0,
++        _reset_last_warning_at=float("-inf"),
++        rest_srv=client,
++        get_logger=lambda: logger,
++    )
++
++    assert demo.BxiExample.robot_reset(node, 1, False) is False
++    assert len(client.requests) == 1
++    assert demo.BxiExample.robot_reset(node, 1, False) is True
++
++
++def test_reset_gate_retries_instead_of_accepting_rejected_response():
++    logger = _Logger()
++    client = _ResetClient(SimpleNamespace(is_success=False))
++    node = SimpleNamespace(
++        _reset_future=None,
++        _reset_future_step=None,
++        _reset_requested_at=0.0,
++        _reset_retry_at=0.0,
++        _reset_last_warning_at=float("-inf"),
++        rest_srv=client,
++        get_logger=lambda: logger,
++    )
++
++    assert demo.BxiExample.robot_reset(node, 2, True) is False
++    assert demo.BxiExample.robot_reset(node, 2, True) is False
++    assert node._reset_future is None
++    assert any("was rejected" in message for message in logger.errors)
+diff --git a/src/bxi_example_py_elf3/test/test_head_control_graph_gate.py b/src/bxi_example_py_elf3/test/test_head_control_graph_gate.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..4f64e24fe48469e412e3654c0eb57bed8b0dbc20
+--- /dev/null
++++ b/src/bxi_example_py_elf3/test/test_head_control_graph_gate.py
+@@ -0,0 +1,125 @@
++from types import SimpleNamespace
++
++import pytest
++
++from bxi_example_py_elf3 import head_control
++
++
++class _FakeNode:
++    pass
++
++
++_RosHeadControlNode = head_control._make_node_class(
++    _FakeNode,
++    None,
++    None,
++    None,
++    None,
++)
++
++
++def _endpoint(owner):
++    return SimpleNamespace(node_name=owner[0], node_namespace=owner[1])
++
++
++def _standing_graph():
++    node = object.__new__(_RosHeadControlNode)
++    node.full_body_standing_mode = True
++    node.feedback_topic = "hardware/actuator_states"
++    node.primary_command_topic = "hardware/actuators_cmds"
++    node.command_topic = "hardware/actuators_cmds_override"
++    node.state_machine_info_topic = "hardware/state_machine_info"
++    node.motion_command_topic = "motion_commands"
++    node.get_node_names_and_namespaces = lambda: list(
++        head_control.FULL_BODY_STANDING_NODES
++    )
++    node.get_publishers_info_by_topic = lambda topic: list(
++        {
++            "hardware/actuator_states": [
++                _endpoint(head_control.STANDING_HARDWARE_NODE)
++            ],
++            "hardware/actuators_cmds": [
++                _endpoint(head_control.STANDING_CONTROLLER_NODE)
++            ],
++            "hardware/state_machine_info": [
++                _endpoint(head_control.STANDING_CONTROLLER_NODE)
++            ],
++            "motion_commands": [_endpoint(head_control.REMOTE_CONTROLLER_NODE)],
++        }.get(topic, ())
++    )
++    node.get_subscriptions_info_by_topic = lambda topic: list(
++        {
++            "hardware/actuators_cmds": [
++                _endpoint(head_control.STANDING_HARDWARE_NODE)
++            ],
++            "hardware/actuators_cmds_override": [
++                _endpoint(head_control.STANDING_CONTROLLER_NODE)
++            ],
++            "motion_commands": [
++                _endpoint(head_control.STANDING_CONTROLLER_NODE)
++            ],
++        }.get(topic, ())
++    )
++    return node
++
++
++def test_valid_legacy_head_enabled_standing_graph_is_accepted():
++    ready, detail = _standing_graph()._hardware_graph_status()
++    assert ready is True
++    assert detail == "head-enabled full-body ROS graph verified"
++
++
++def test_current_head_disabled_node_is_rejected():
++    node = _standing_graph()
++    node.get_node_names_and_namespaces = lambda: [
++        ("hardware_elf3", "/"),
++        head_control.STANDING_CONTROLLER_NODE,
++        head_control.REMOTE_CONTROLLER_NODE,
++    ]
++    ready, detail = node._hardware_graph_status()
++    assert ready is False
++    assert "hardware_elf3_head" in detail
++
++
++def test_wrong_or_duplicate_override_endpoint_is_rejected():
++    node = _standing_graph()
++    original = node.get_subscriptions_info_by_topic
++    node.get_subscriptions_info_by_topic = lambda topic: (
++        [_endpoint(("unexpected", "/"))]
++        if topic == "hardware/actuators_cmds_override"
++        else original(topic)
++    )
++    ready, detail = node._hardware_graph_status()
++    assert ready is False
++    assert "override subscriber" in detail
++
++    node = _standing_graph()
++    original = node.get_subscriptions_info_by_topic
++    node.get_subscriptions_info_by_topic = lambda topic: (
++        [
++            _endpoint(head_control.STANDING_CONTROLLER_NODE),
++            _endpoint(head_control.STANDING_CONTROLLER_NODE),
++        ]
++        if topic == "hardware/actuators_cmds_override"
++        else original(topic)
++    )
++    ready, detail = node._hardware_graph_status()
++    assert ready is False
++    assert "override subscriber" in detail
++
++
++def test_client_feedback_rejects_duplicate_head_joint_names():
++    state = head_control.HeadCommandState(
++        yaw_limit=head_control.DEFAULT_YAW_LIMIT,
++        pitch_limit=head_control.DEFAULT_PITCH_LIMIT,
++        key_step=head_control.DEFAULT_STEP,
++        maximum_speed=head_control.DEFAULT_MAX_SPEED,
++        publish_rate=head_control.DEFAULT_PUBLISH_RATE,
++        feedback_timeout=head_control.DEFAULT_FEEDBACK_TIMEOUT,
++    )
++    with pytest.raises(ValueError, match="duplicate head joint"):
++        state.update_feedback(
++            ("head_z_joint", "head_z_joint", "head_y_joint"),
++            (0.0, 0.1, 0.0),
++            now=1.0,
++        )
+diff --git a/src/bxi_example_py_elf3/test/test_head_override.py b/src/bxi_example_py_elf3/test/test_head_override.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..b45f5b7ac0aed799241f36824304056fb08bc4f5
+--- /dev/null
++++ b/src/bxi_example_py_elf3/test/test_head_override.py
+@@ -0,0 +1,350 @@
++from pathlib import Path
++import importlib.util
++
++import numpy as np
++import pytest
++import yaml
++
++from bxi_example_py_elf3.utils.head_override import (
++    HEAD_DEFAULT_KD,
++    HEAD_DEFAULT_KP,
++    HEAD_DEFAULT_POSITION,
++    HEAD_JOINT_NAMES,
++    HEAD_MAX_SPEED_RAD_PER_SEC,
++    HeadCommandOverride,
++    append_head_command,
++    extract_body_feedback,
++    extract_head_feedback,
++    head_override_permitted,
++    limit_head_position_from_feedback,
++)
++
++
++def _command(override, *, now=1.0, names=HEAD_JOINT_NAMES):
++    return override.submit(
++        names,
++        (0.2, -0.1),
++        (16.747, 12.0),
++        (1.066, 0.8),
++        velocity=(0.0, 0.0),
++        torque=(0.0, 0.0),
++        received_at=now,
++    )
++
++
++def test_head_override_reorders_named_command_and_preserves_limits():
++    override = HeadCommandOverride()
++    submitted = override.submit(
++        ("head_y_joint", "head_z_joint"),
++        (-0.1, 0.2),
++        (12.0, 16.747),
++        (0.8, 1.066),
++        received_at=1.0,
++    )
++    position, kp, kd = override.apply(
++        HEAD_DEFAULT_POSITION,
++        HEAD_DEFAULT_KP,
++        HEAD_DEFAULT_KD,
++        now=1.01,
++    )
++
++    assert submitted == HEAD_JOINT_NAMES
++    assert position == pytest.approx((0.2, -0.1))
++    assert kp == pytest.approx((16.747, 12.0))
++    assert kd == pytest.approx((1.066, 0.8))
++
++
++@pytest.mark.parametrize(
++    ("names", "position", "kp", "kd", "velocity", "torque", "match"),
++    (
++        (("waist_y_joint", "head_y_joint"), (0, 0), (1, 1), (1, 1), (), (), "exactly"),
++        (HEAD_JOINT_NAMES, (1.58, 0), (1, 1), (1, 1), (), (), "position"),
++        (HEAD_JOINT_NAMES, (0, 0), (17, 1), (1, 1), (), (), "kp"),
++        (HEAD_JOINT_NAMES, (0, 0), (1, 1), (1.1, 1), (), (), "kd"),
++        (HEAD_JOINT_NAMES, (0, 0), (1, 1), (1, 1), (0.1, 0), (), "velocity"),
++        (HEAD_JOINT_NAMES, (0, 0), (1, 1), (1, 1), (), (0, 0.1), "torque"),
++    ),
++)
++def test_head_override_rejects_unsafe_payloads(
++    names, position, kp, kd, velocity, torque, match
++):
++    override = HeadCommandOverride()
++    with pytest.raises(ValueError, match=match):
++        override.submit(
++            names,
++            position,
++            kp,
++            kd,
++            velocity=velocity,
++            torque=torque,
++            received_at=1.0,
++        )
++
++
++def test_head_override_timeout_blends_back_to_controller_base():
++    override = HeadCommandOverride(timeout_sec=0.2, release_sec=0.2)
++    _command(override, now=1.0)
++    override.apply(
++        HEAD_DEFAULT_POSITION,
++        HEAD_DEFAULT_KP,
++        HEAD_DEFAULT_KD,
++        now=1.1,
++    )
++
++    start_position, _, _ = override.apply(
++        HEAD_DEFAULT_POSITION,
++        HEAD_DEFAULT_KP,
++        HEAD_DEFAULT_KD,
++        now=1.21,
++    )
++    midpoint_position, _, _ = override.apply(
++        HEAD_DEFAULT_POSITION,
++        HEAD_DEFAULT_KP,
++        HEAD_DEFAULT_KD,
++        now=1.31,
++    )
++    final_position, final_kp, final_kd = override.apply(
++        HEAD_DEFAULT_POSITION,
++        HEAD_DEFAULT_KP,
++        HEAD_DEFAULT_KD,
++        now=1.42,
++    )
++
++    assert start_position == pytest.approx((0.2, -0.1))
++    assert midpoint_position == pytest.approx((0.1, -0.05))
++    assert final_position == pytest.approx(HEAD_DEFAULT_POSITION)
++    assert final_kp == pytest.approx(HEAD_DEFAULT_KP)
++    assert final_kd == pytest.approx(HEAD_DEFAULT_KD)
++
++
++def test_closed_safety_gate_consumes_command_instead_of_reactivating_it():
++    override = HeadCommandOverride()
++    _command(override, now=1.0)
++
++    position, kp, kd = override.apply(
++        (0.05, -0.05),
++        (0.0, 0.0),
++        (0.0, 0.0),
++        now=1.01,
++        permitted=False,
++    )
++    assert position == pytest.approx((0.05, -0.05))
++    assert kp == pytest.approx((0.0, 0.0))
++    assert kd == pytest.approx((0.0, 0.0))
++
++
++def test_safety_cancel_drops_an_active_release_generation_immediately():
++    override = HeadCommandOverride()
++    _command(override, now=1.0)
++    override.apply(
++        (0.0, 0.0),
++        (0.0, 0.0),
++        (0.0, 0.0),
++        now=1.01,
++        permitted=True,
++    )
++
++    override.cancel()
++    position, kp, kd = override.apply(
++        (0.05, -0.05),
++        (0.0, 0.0),
++        (0.0, 0.0),
++        now=1.02,
++        permitted=True,
++    )
++    assert position == pytest.approx((0.05, -0.05))
++    assert kp == pytest.approx((0.0, 0.0))
++    assert kd == pytest.approx((0.0, 0.0))
++
++    position, kp, kd = override.apply(
++        (0.06, -0.04),
++        (0.0, 0.0),
++        (0.0, 0.0),
++        now=1.02,
++        permitted=True,
++    )
++    assert position == pytest.approx((0.06, -0.04))
++    assert kp == pytest.approx((0.0, 0.0))
++    assert kd == pytest.approx((0.0, 0.0))
++
++
++def test_server_speed_limit_is_relative_to_fresh_feedback():
++    limited = limit_head_position_from_feedback(
++        (1.0, -0.5),
++        (0.2, -0.1),
++        maximum_speed=HEAD_MAX_SPEED_RAD_PER_SEC,
++        elapsed=0.02,
++    )
++    maximum_increment = HEAD_MAX_SPEED_RAD_PER_SEC * 0.02
++    assert limited == pytest.approx(
++        (0.2 + maximum_increment, -0.1 - maximum_increment)
++    )
++
++
++def test_named_feedback_mapping_reorders_31_axis_sample_and_rejects_nan():
++    body_names = tuple("body_{:02d}".format(index) for index in range(29))
++    names = (
++        ("head_y_joint",)
++        + tuple(reversed(body_names))
++        + ("extra", "head_z_joint")
++    )
++    position_by_name = {
++        **{name: float(index) for index, name in enumerate(body_names)},
++        "head_z_joint": 0.3,
++        "head_y_joint": -0.2,
++        "extra": 99.0,
++    }
++    velocity_by_name = {
++        **{name: float(index + 10) for index, name in enumerate(body_names)},
++        "head_z_joint": 0.0,
++        "head_y_joint": 0.0,
++        "extra": 99.0,
++    }
++    positions = tuple(position_by_name[name] for name in names)
++    velocities = tuple(velocity_by_name[name] for name in names)
++
++    body_position, body_velocity = extract_body_feedback(
++        names, positions, velocities, body_names
++    )
++    head_position = extract_head_feedback(names, positions, velocities)
++    assert body_position == pytest.approx(tuple(float(i) for i in range(29)))
++    assert body_velocity == pytest.approx(tuple(float(i + 10) for i in range(29)))
++    assert head_position == pytest.approx((0.3, -0.2))
++
++    bad_positions = list(positions)
++    bad_positions[names.index(body_names[0])] = float("nan")
++    with pytest.raises(ValueError, match="NaN or Inf"):
++        extract_body_feedback(names, bad_positions, velocities, body_names)
++
++
++@pytest.mark.parametrize(
++    ("names", "positions", "velocities", "match"),
++    (
++        (
++            ("body_a", "head_z_joint", "head_z_joint", "head_y_joint"),
++            (0.0, 0.0, 0.0, 0.0),
++            (0.0, 0.0, 0.0, 0.0),
++            "duplicate head",
++        ),
++        (
++            ("body_a", "body_b", "head_z_joint"),
++            (0.0, 0.0, 0.0),
++            (0.0, 0.0, 0.0),
++            "missing",
++        ),
++        (
++            ("body_a", "body_b", "head_z_joint", "head_y_joint"),
++            (0.0, 0.0, 1.58, 0.0),
++            (0.0, 0.0, 0.0, 0.0),
++            "mechanical",
++        ),
++        (
++            ("body_a", "body_b", "head_z_joint", "head_y_joint"),
++            (0.0, 0.0, 0.0, 0.0),
++            (0.0, 0.0, 0.0, float("nan")),
++            "NaN or Inf",
++        ),
++    ),
++)
++def test_named_feedback_mapping_fails_closed(
++    names, positions, velocities, match
++):
++    with pytest.raises(ValueError, match=match):
++        extract_head_feedback(names, positions, velocities)
++
++
++def test_malformed_head_fields_do_not_invalidate_valid_29_axis_body_feedback():
++    body_names = tuple("body_{:02d}".format(index) for index in range(29))
++    names = body_names + ("head_z_joint", "head_z_joint")
++    positions = tuple(float(index) for index in range(29)) + ("bad", 0.0)
++    velocities = tuple(float(index) for index in range(29)) + (0.0, 0.0)
++
++    body_position, body_velocity = extract_body_feedback(
++        names, positions, velocities, body_names
++    )
++    assert body_position == pytest.approx(tuple(float(i) for i in range(29)))
++    assert body_velocity == pytest.approx(tuple(float(i) for i in range(29)))
++    with pytest.raises(ValueError, match="duplicate head"):
++        extract_head_feedback(names, positions, velocities)
++
++
++def test_server_gate_requires_reset_nonzero_torque_and_fresh_feedback():
++    safe = dict(
++        reset_step=2,
++        state_name="normal",
++        in_transition=False,
++        feedback_received=True,
++        feedback_received_at=1.0,
++        now=1.05,
++        feedback_timeout_sec=0.1,
++    )
++    assert head_override_permitted(**safe) is True
++    assert head_override_permitted(**{**safe, "reset_step": 1}) is False
++    assert head_override_permitted(**{**safe, "state_name": "zero_torque"}) is False
++    assert head_override_permitted(**{**safe, "in_transition": True}) is False
++    assert head_override_permitted(**{**safe, "feedback_received": False}) is False
++    assert head_override_permitted(**{**safe, "now": 1.11}) is False
++
++
++def test_legacy_29_body_fields_are_unchanged_when_two_head_fields_are_appended():
++    body_position = np.linspace(-0.2, 0.2, 29, dtype=np.float32)
++    body_kp = np.ones(29, dtype=np.float32) * 10.0
++    body_kd = np.ones(29, dtype=np.float32)
++
++    position, kp, kd = append_head_command(
++        body_position,
++        body_kp,
++        body_kd,
++        (0.2, -0.1),
++        (16.747, 12.0),
++        (1.066, 0.8),
++    )
++
++    assert position.shape == kp.shape == kd.shape == (31,)
++    assert position[:29] == pytest.approx(body_position)
++    assert kp[:29] == pytest.approx(body_kp)
++    assert kd[:29] == pytest.approx(body_kd)
++    assert position[-2:] == pytest.approx((0.2, -0.1))
++
++
++def _load_hardware_launch_module():
++    launch_path = (
++        Path(__file__).resolve().parents[1]
++        / "launch"
++        / "example_demo_hw.launch.py"
++    )
++    spec = importlib.util.spec_from_file_location("legacy_head_hw_launch", launch_path)
++    module = importlib.util.module_from_spec(spec)
++    assert spec.loader is not None
++    spec.loader.exec_module(module)
++    return module
++
++
++def test_hardware_launch_boolean_is_strict_and_remote_requests_head():
++    module = _load_hardware_launch_module()
++    assert module._parse_enable_head("true") is True
++    assert module._parse_enable_head("false") is False
++    assert module._hardware_mode(True) == (
++        "hardware_elf3_head",
++        0x00000000,
++        "FULL_BODY_HEAD_ENABLED",
++        "enabled",
++    )
++    assert module._hardware_mode(False) == (
++        "hardware_elf3",
++        0x60000000,
++        "FULL_BODY_HEAD_DISABLED",
++        "disabled",
++    )
++    with pytest.raises(RuntimeError):
++        module._parse_enable_head("maybe")
++
++    remote_config = (
++        Path(__file__).resolve().parents[2]
++        / "remote_controller"
++        / "config"
++        / "xbox_default.yaml"
++    )
++    config = yaml.safe_load(remote_config.read_text(encoding="utf-8"))
++    start_commands = config["system"]["start"]
++    assert any("example_demo_hw.launch.py enable_head:=true" in command for command in start_commands)
+diff --git a/src/bxi_example_py_elf3/test/test_state_machine_export.py b/src/bxi_example_py_elf3/test/test_state_machine_export.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..f39af3b75e74c136c25d1fa358bbbe0f79d5d52e
+--- /dev/null
++++ b/src/bxi_example_py_elf3/test/test_state_machine_export.py
+@@ -0,0 +1,71 @@
++from types import SimpleNamespace
++
++from bxi_example_py_elf3.utils.state_machine import RobotStateMachine
++
++
++class _Logger:
++    def __init__(self):
++        self.warnings = []
++
++    def warning(self, message):
++        self.warnings.append(message)
++
++
++def _machine():
++    machine = object.__new__(RobotStateMachine)
++    logger = _Logger()
++    machine._ctx = SimpleNamespace(get_logger=lambda: logger)
++    return machine, logger
++
++
++def test_graph_export_uses_requested_path_when_writable():
++    machine, logger = _machine()
++    writes = []
++    machine._write_graph_file = lambda path, content: writes.append((path, content))
++
++    machine._write_text("/tmp/requested.dot", "graph")
++
++    assert writes == [("/tmp/requested.dot", "graph")]
++    assert logger.warnings == []
++
++
++def test_graph_export_falls_back_without_stopping_controller():
++    machine, logger = _machine()
++    machine._write_graph_file = lambda _path, _content: (_ for _ in ()).throw(
++        PermissionError("root-owned")
++    )
++    machine._write_process_graph_file = (
++        lambda _basename, _content: "/tmp/secure-random.dot"
++    )
++
++    machine._write_text("/tmp/root-owned.dot", "graph")
++
++    assert len(logger.warnings) == 1
++    assert "/tmp/secure-random.dot" in logger.warnings[0]
++
++
++def test_graph_export_double_failure_is_nonfatal():
++    machine, logger = _machine()
++
++    def fail(_path, _content):
++        raise PermissionError("not writable")
++
++    machine._write_graph_file = fail
++    machine._write_process_graph_file = fail
++    machine._write_text("/protected/state.dot", "graph")
++
++    assert len(logger.warnings) == 1
++    assert "export skipped" in logger.warnings[0]
++
++
++def test_graph_file_replaces_symlink_without_following_it(tmp_path):
++    victim = tmp_path / "victim"
++    victim.write_text("keep", encoding="utf-8")
++    target = tmp_path / "state.dot"
++    target.symlink_to(victim)
++
++    RobotStateMachine._write_graph_file(str(target), "safe")
++
++    assert victim.read_text(encoding="utf-8") == "keep"
++    assert target.is_symlink() is False
++    assert target.read_text(encoding="utf-8") == "safe"
+diff --git a/src/remote_controller/config/xbox_default.yaml b/src/remote_controller/config/xbox_default.yaml
+index e4ee17ba62a9c156d7ebe4d0749daeb9fb7b9688..734c121925ba6bcf4012e247ad704fd7811b07d8 100644
+--- a/src/remote_controller/config/xbox_default.yaml
++++ b/src/remote_controller/config/xbox_default.yaml
+@@ -288,7 +288,7 @@ outputs:
+ system:
+   start:
+   - mkdir -p /var/log/bxi_log
+-  - ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py > /var/log/bxi_log/$(date
++  - ros2 launch bxi_example_py_elf3 example_demo_hw.launch.py enable_head:=true > /var/log/bxi_log/$(date
+     +%Y-%m-%d_%H-%M-%S)_elf.log 2>&1 &
+   - ros2 launch bxi_example_bms bms.launch.py > /var/log/bxi_log/bms_$(date +%Y-%m-%d_%H-%M-%S)_bms.log
+     2>&1 &

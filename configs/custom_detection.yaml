@@ -1,0 +1,21 @@
+# Custom object-detection dataset template.
+# Keep large image/label data outside this Git repository.
+#
+# Expected layout:
+# /home/hssw/datasets/my_dataset/
+# ├── images/
+# │   ├── train/
+# │   └── val/
+# └── labels/
+#     ├── train/
+#     └── val/
+
+path: /home/hssw/datasets/my_dataset
+train: images/train
+val: images/val
+test:  # optional: images/test
+
+# Replace these names with your real classes. IDs must start at 0 and be contiguous.
+names:
+  0: class_0
+  1: class_1

@@ -1,0 +1,129 @@
+{
+  "source_file": "/home/robot/hand_eyes_calibration/calibration_output_20260918_joint/calibration_result.json",
+  "source_sha256": "5c8b230effae7a2ce66969e320bd8522f2a8e5bc766b3c6d5e68c9181f9a4ba3",
+  "parent_frame": "head_pitch_Link",
+  "child_frame": "head_d435i_optical_frame",
+  "T_parent_child_m": [
+    [
+      0.009718639158357611,
+      0.03189887577185938,
+      0.9994438502374214,
+      0.04828658475234188
+    ],
+    [
+      -0.9999527728927298,
+      0.0003161124033930207,
+      0.009713498704856272,
+      0.07154644940581233
+    ],
+    [
+      -6.086909058667764e-06,
+      -0.9994910513843734,
+      0.03190044146261352,
+      -0.027748198679288245
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "joint_input": "measured q_ours with original hardware_direction conversion",
+  "joint_offsets_to_apply_rad": [
+    0.0,
+    0.0
+  ],
+  "validation": {
+    "pose_count": 20,
+    "origin_mm": {
+      "count": 20,
+      "rms": 3.4241547440479794,
+      "mean": 3.119144728368112,
+      "median": 3.488046594740547,
+      "p95": 5.224010448003611,
+      "max": 5.237653090879538
+    },
+    "origin_to_optimized_Y_mm": {
+      "count": 20,
+      "rms": 3.4233651789738992,
+      "mean": 3.117649095026395,
+      "median": 3.4876813591145854,
+      "p95": 5.217671364952492,
+      "max": 5.23123424764153
+    },
+    "all_corners_to_Y_mm": {
+      "count": 1760,
+      "rms": 3.1531683728768627,
+      "mean": 2.9554576262431387,
+      "median": 3.185195622174402,
+      "p95": 4.552159055265551,
+      "max": 5.449829423762914
+    },
+    "reprojection_px": {
+      "count": 1760,
+      "rms": 2.0548323175495526,
+      "mean": 1.8159831266537025,
+      "median": 1.646356224407791,
+      "p95": 3.8338597839459982,
+      "max": 5.403335430588934
+    },
+    "board_rotation_deg": {
+      "count": 20,
+      "rms": 1.5072421033475405,
+      "mean": 1.2564167972373577,
+      "median": 1.2847822658928232,
+      "p95": 2.9341164760458853,
+      "max": 2.941129266879543
+    },
+    "axis_rms_mm": [
+      3.2197744467894216,
+      0.9528096556123216,
+      0.6708516849200598
+    ]
+  },
+  "scope": {
+    "same_session_holdout": true,
+    "pose_indices": [
+      80,
+      81,
+      82,
+      83,
+      84,
+      85,
+      86,
+      87,
+      88,
+      89,
+      90,
+      91,
+      92,
+      93,
+      94,
+      95,
+      96,
+      97,
+      98,
+      99
+    ],
+    "observed_board_z_range_mm": [
+      485.2182548713443,
+      569.7134253068449
+    ],
+    "yaw_pitch_ranges_deg": [
+      [
+        -18.48175081852956,
+        -1.7578124688743098
+      ],
+      [
+        18.40072599195299,
+        16.008453942703316
+      ]
+    ],
+    "absolute_accuracy_verified": false,
+    "depth_pointcloud_verified": false,
+    "every_origin_error_le_5mm": false
+  },
+  "deployed": false,
+  "note": "optical transform, not the physical camera_link mounting transform; replace the existing optical TF branch or factor through its fixed link transform before deployment"
+}

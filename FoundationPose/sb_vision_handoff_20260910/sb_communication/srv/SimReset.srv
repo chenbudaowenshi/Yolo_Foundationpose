@@ -1,0 +1,6 @@
+# Reset the sb_mujoco simulation to a keyframe (default "home") and optionally override joint positions.
+string keyframe
+sensor_msgs/JointState joint_state
+---
+bool success
+string message

@@ -1,0 +1,11 @@
+<!-- Reference snippet only; not deployed.
+     RGB optical frame: X right, Y down, Z forward.
+     Uses original measured q_ours without extra joint-zero corrections.
+     Status: PASSED_HELDOUT_ORIGIN_RMS_5MM; this is not an all-points <=5mm guarantee.
+     Do not paste this optical transform into a physical camera_link joint. -->
+<link name="head_d435i_optical_frame"/>
+<joint name="head_d435i_calibrated_optical_joint" type="fixed">
+  <parent link="head_pitch_Link"/>
+  <child link="head_d435i_optical_frame"/>
+  <origin xyz="0.048286584752 0.071546449406 -0.027748198679" rpy="-1.538890472335 0.000006086909 -1.561077534639"/>
+</joint>

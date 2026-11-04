@@ -1,0 +1,47 @@
+{
+  "object_id": "bottle",
+  "mesh": "../../runs/mesh/bottle.obj",
+  "mesh_unit": "m",
+  "mesh_sha256": "566773b675e80bda7a76b0715336c2b144663492c0cd06cc0b4e6e5292862bc2",
+  "expected_extents_m": [
+    0.065068,
+    0.065122,
+    0.1595
+  ],
+  "T_model_object_center": [
+    [
+      1,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      1,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      1,
+      0.07975
+    ],
+    [
+      0,
+      0,
+      0,
+      1
+    ]
+  ],
+  "long_axis_in_object_frame": [
+    0,
+    0,
+    1
+  ],
+  "nominal_diameter_m": 0.0651,
+  "height_m": 0.1595,
+  "mass_kg": null,
+  "center_definition": "center of model bounds; confirmed default bottle, CAD origin at bottom",
+  "downstream_action": "update bottle dimensions, collision geometry and grasp-center calibration for this diameter; TCP and mass not measured"
+}

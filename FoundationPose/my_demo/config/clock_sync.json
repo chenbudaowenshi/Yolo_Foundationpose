@@ -1,0 +1,13 @@
+{
+  "mode": "required",
+  "server": null,
+  "port": 123,
+  "max_error_bound_ms": 2.0,
+  "interval_s": 5.0,
+  "timeout_s": 0.5,
+  "samples": 3,
+  "max_status_age_s": 15.0,
+  "query_timeout_s": 8.0,
+  "jump_limit_ms": 5.0,
+  "note": "Set the same NTP source on robot, vision and control hosts before cross-machine use. Local verification must explicitly select local or loopback test mode; no robot connection is made by this default configuration."
+}

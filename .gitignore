@@ -150,3 +150,28 @@ weights/
 *_web_model/
 *_openvino_model/
 *_paddle_model/
+
+# ---- Yolo_Foundationpose：数据、模型、第三方代码不进仓库 ----
+*.zip
+*.tar.gz
+*.deb
+*.deb.1
+*.pth
+*.bag
+/.vscode/
+/mesh/
+/meshes/
+/tools/cvat/
+# FoundationPose 原来的 NVlabs git 元数据（改名保存，需要时改回 .git）
+/FoundationPose/.git_nvlabs/
+/FoundationPose/.agents/
+/FoundationPose/.codex/
+/FoundationPose/.pytest_cache/
+/FoundationPose/demo_data/
+/FoundationPose/debug/
+/FoundationPose/MUJOCO_LOG.TXT
+/FoundationPose/mycpp/build*/
+# 第三方仓库，按 readme 单独安装
+/FoundationPose/librealsense/
+/FoundationPose/nvdiffrast/
+/FoundationPose/ultralytics/

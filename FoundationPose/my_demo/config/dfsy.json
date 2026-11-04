@@ -1,0 +1,64 @@
+{
+  "object_id": "dfsy",
+  "class_id": 4,
+  "display_name": "东方树叶",
+  "mesh": "../../runs/mesh/dfsy/dfsy.obj",
+  "mesh_textured": "../../runs/mesh/dfsy/textured/dfsy.obj",
+  "mesh_unit": "m",
+  "mesh_sha256": "2604402439ac63ab939fdc854e9ff1c115035227901e3ce21ac4a7a6fe6bdd2e",
+  "expected_extents_m": [
+    0.058552,
+    0.054669,
+    0.199989
+  ],
+  "T_model_object_center": [
+    [
+      1,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      1,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      1,
+      0.099995
+    ],
+    [
+      0,
+      0,
+      0,
+      1
+    ]
+  ],
+  "long_axis_in_object_frame": [
+    0,
+    0,
+    1
+  ],
+  "nominal_diameter_m": 0.056611,
+  "height_m": 0.199989,
+  "mass_kg": null,
+  "center_definition": "center of model bounds; origin at bottom center, Z up, cap at +Z",
+  "source": {
+    "mesh": "/home/robot/下载/YOLOv8/meshes/dfsy/594d47f940ab311b6057546d3b58a8e0.obj",
+    "mesh_sha256": "3a6a263f62ea5ca8c447255626e20e12cb5f1a69286202813dfd45d48f602277",
+    "raw_extents": [
+      0.338084,
+      1.154767,
+      0.315655
+    ],
+    "rotation": "绕 X 轴 +90°（Y→Z）"
+  },
+  "scale": {
+    "method": "uniform, from tape-measured height",
+    "measured_height_m": 0.2,
+    "meters_per_source_unit": 0.173195112
+  }
+}

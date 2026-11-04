@@ -1,0 +1,64 @@
+{
+  "object_id": "nfsq",
+  "class_id": 3,
+  "display_name": "农夫山泉",
+  "mesh": "../../runs/mesh/nfsq/nfsq.obj",
+  "mesh_textured": "../../runs/mesh/nfsq/textured/nfsq.obj",
+  "mesh_unit": "m",
+  "mesh_sha256": "26bb0106c6464da91bcbab1cd49868ebd47a58ea8ac325aed62bbf0b9b11b228",
+  "expected_extents_m": [
+    0.063841,
+    0.064809,
+    0.216976
+  ],
+  "T_model_object_center": [
+    [
+      1,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      1,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      1,
+      0.108488
+    ],
+    [
+      0,
+      0,
+      0,
+      1
+    ]
+  ],
+  "long_axis_in_object_frame": [
+    0,
+    0,
+    1
+  ],
+  "nominal_diameter_m": 0.064325,
+  "height_m": 0.216976,
+  "mass_kg": null,
+  "center_definition": "center of model bounds; origin at bottom center, Z up, cap at +Z",
+  "source": {
+    "mesh": "/home/robot/下载/YOLOv8/meshes/nfsq/06fe41ffc94faf0b3e210898f03293df.obj",
+    "mesh_sha256": "cf70faa19b201632ca029878586911b289acf280316bc220d719a19d5be3bdc0",
+    "raw_extents": [
+      0.344882,
+      1.171349,
+      0.350203
+    ],
+    "rotation": "绕 X 轴 +90°（Y→Z）"
+  },
+  "scale": {
+    "method": "uniform, from tape-measured height",
+    "measured_height_m": 0.217,
+    "meters_per_source_unit": 0.185256486
+  }
+}

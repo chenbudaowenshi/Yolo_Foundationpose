@@ -1,0 +1,20 @@
+# Install FoundationPose's environment and CUDA dependencies first.
+# PyTorch/torchvision are deliberately not pinned here: select CUDA wheels
+# compatible with the recipient machine's NVIDIA driver and toolkit.
+
+numpy>=2
+scipy>=1.10
+opencv-python>=4.6
+Pillow>=7.1.2
+PyYAML>=6
+requests>=2.23
+tqdm>=4.64
+matplotlib>=3.2.2
+pandas>=1.1.4
+seaborn>=0.11
+psutil
+thop>=0.1.1
+sentry-sdk
+trimesh
+pyrealsense2==2.58.3.10794
+
