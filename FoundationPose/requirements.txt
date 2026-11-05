@@ -17,7 +17,7 @@ joblib
 
 # Config / serialization
 PyYAML>=6
-ruamel.yaml>=0.18
+ruamel.yaml>=0.19.1
 
 # Vision & 3D
 opencv-python
