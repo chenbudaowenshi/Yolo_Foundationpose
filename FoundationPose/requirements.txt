@@ -34,7 +34,7 @@ pyOpenGL_accelerate>=3.1
 
 # Inference stack (torch installed separately)
 kornia>=0.7
-omegaconf>=2.3
+omegaconf>=2.4.0
 psutil
 tqdm
 warp-lang
