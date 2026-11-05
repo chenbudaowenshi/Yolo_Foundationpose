@@ -30,7 +30,7 @@ pandas
 Pillow
 pyrender
 pyOpenGL>=3.1
-pyOpenGL_accelerate>=3.1
+pyOpenGL_accelerate>=3.1.10
 
 # Inference stack (torch installed separately)
 kornia>=0.7
